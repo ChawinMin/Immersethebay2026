@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/@mentra/miniapp-cli/schema/miniapp.schema.json",
+  "packageName": "com.mentra.tinker",
+  "version": "1.0.0",
+  "name": "Tinker",
+  "description": "An app that preserve the art, history, and culture of matcha tea.",
+  "icon": "IMBIcon.png",
+  "type": "standard",
+  "sdkVersion": "0.3.0",
+  "minHostVersion": "1.42.0",
+  "entry": {
+    "background": "background/index.js",
+    "ui": "ui/index.html"
+  },
+  "permissions": [
+    {
+      "type": "CAMERA"
+    },
+    {
+      "type": "MICROPHONE"
+    }
+  ],
+  "hardwareRequirements": [
+    {
+      "type": "CAMERA",
+      "level": "REQUIRED"
+    },
+    {
+      "type": "MICROPHONE",
+      "level": "REQUIRED"
+    }
+  ]
+}
