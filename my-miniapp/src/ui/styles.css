@@ -1,23 +1,141 @@
+/*
+ * styles.css: every colour and size of the Tinker screen.
+ *
+ * WHY IT IS BUILT THIS WAY
+ *   The page fills the whole phone screen, under the status bar and the home
+ *   indicator. The root element (.tinker-root) is padded by the safe-area
+ *   insets in App.tsx and carries the background colour, so the colour also
+ *   shows behind those bars.
+ *
+ *   The text of the status bar follows the Mentra App's light or dark theme.
+ *   <MentraProvider> mirrors that theme as <html class="dark">. So every
+ *   colour below is a variable with a light value in `:root` and a dark value
+ *   in `:root.dark`. Do not write a fixed colour in a rule further down: add
+ *   a variable to both blocks instead.
+ *
+ *   The look (matcha green, cream page, rounded cards) is the teammate's
+ *   design. The class names are theirs too.
+ */
+
+/* ---------------------------------------------------------------- colours */
+
 :root {
+  color-scheme: light;
+
+  /* surfaces */
   --bg-primary: #FAF9F6;
   --bg-card: #FFFFFF;
   --bg-sage: #EFF4ED;
+  --bg-input: #FFFFFF;
+
+  /* text */
   --text-main: #252525;
   --text-muted: #667085;
+
+  /* matcha green */
   --primary-green: #668B5B;
   --primary-green-hover: #4A6B40;
   --primary-green-light: #EBF1EA;
+  --green-border: #C3D5C0;
+  --green-glow: rgba(102, 139, 91, 0.2);
+  --on-primary: #FFFFFF;
+
+  /* red: recording and errors */
   --recording-red: #E45A5A;
+  --recording-red-hover: #D03D3D;
   --recording-red-light: #FDE8E8;
+  --red-glow: rgba(228, 90, 90, 0.7);
+  --red-glow-clear: rgba(228, 90, 90, 0);
+  --on-danger: #FFFFFF;
+  /* Red for sentences. Darker than --recording-red so it can be read on the light red. */
+  --error-text: #B42318;
+
+  /* lines and dots */
   --border-light: #E2E8DF;
+  --dot-idle: #9CA3AF;
+
+  /* the voice pill: listening is blue, thinking is amber */
+  --listening-bg: #E0F2FE;
+  --listening-text: #0369A1;
+  --listening-dot: #0284C7;
+  --thinking-bg: #FEF3C7;
+  --thinking-text: #B45309;
+  --thinking-dot: #D97706;
+
+  /* the photo box of the recording screen */
+  --viewfinder-bg: #111111;
+  --viewfinder-text: #A0AEC0;
+  --photo-tag-bg: rgba(0, 0, 0, 0.6);
+  --photo-tag-text: #FFFFFF;
+
+  /* shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-card: 0 4px 20px -2px rgba(102, 139, 91, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  --shadow-hover: 0 10px 25px -3px rgba(102, 139, 91, 0.16);
+  --shadow-tab: 0 2px 8px rgba(102, 139, 91, 0.3);
+  --shadow-btn: 0 4px 12px rgba(102, 139, 91, 0.25);
+  --shadow-danger: 0 4px 12px rgba(228, 90, 90, 0.3);
+  --focus-ring: 0 0 0 3px rgba(102, 139, 91, 0.15);
+
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 18px;
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
-  --shadow-card: 0 4px 20px -2px rgba(102, 139, 91, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
-  --shadow-hover: 0 10px 25px -3px rgba(102, 139, 91, 0.16);
 }
+
+/* Dark mode: the same matcha look on a dark green-black page. Buttons become light green with dark text. */
+:root.dark {
+  color-scheme: dark;
+
+  --bg-primary: #141813;
+  --bg-card: #1D231B;
+  --bg-sage: #262E23;
+  --bg-input: #151A14;
+
+  --text-main: #ECEFE8;
+  --text-muted: #A3AD9F;
+
+  --primary-green: #8DB380;
+  --primary-green-hover: #A9C99E;
+  --primary-green-light: #2A3826;
+  --green-border: #3F5239;
+  --green-glow: rgba(141, 179, 128, 0.25);
+  --on-primary: #10160E;
+
+  --recording-red: #E66B6B;
+  --recording-red-hover: #F08585;
+  --recording-red-light: #3B1F1F;
+  --red-glow: rgba(230, 107, 107, 0.7);
+  --red-glow-clear: rgba(230, 107, 107, 0);
+  --on-danger: #1A0D0D;
+  --error-text: #FFA59B;
+
+  --border-light: #323B2F;
+  --dot-idle: #6B7280;
+
+  --listening-bg: #12303F;
+  --listening-text: #7CC7F2;
+  --listening-dot: #38BDF8;
+  --thinking-bg: #3D2E0F;
+  --thinking-text: #F5C56B;
+  --thinking-dot: #F59E0B;
+
+  --viewfinder-bg: #0A0C0A;
+  --viewfinder-text: #8A948A;
+  /* The label sits on a photo, so it is the same in both modes. */
+  --photo-tag-bg: rgba(0, 0, 0, 0.6);
+  --photo-tag-text: #FFFFFF;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.35), 0 2px 6px -1px rgba(0, 0, 0, 0.3);
+  --shadow-hover: 0 10px 25px -3px rgba(0, 0, 0, 0.5);
+  --shadow-tab: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-btn: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-danger: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --focus-ring: 0 0 0 3px rgba(141, 179, 128, 0.25);
+}
+
+/* ---------------------------------------------------------------- page */
 
 * {
   box-sizing: border-box;
@@ -26,37 +144,72 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/* `hidden` must win over any display rule below (a photo that has not loaded yet). */
+[hidden] {
+  display: none !important;
+}
+
+/* The brand row sticks to the top. This keeps a focused box from hiding under it when the page scrolls to it. */
+html {
+  scroll-padding-top: 100px;
+}
+
 body {
+  /* Same colour as the root, so pulling the page past its end shows no white. */
   background-color: var(--bg-primary);
   color: var(--text-main);
   font-family: var(--font-family);
-  min-height: 100vh;
   line-height: 1.5;
 }
 
-/* Layout Container */
-.tinker-container {
+/* The element App.tsx pads by the safe-area insets. It fills the screen and carries the background. */
+.tinker-root {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+ * The brand row. It sticks to the top of the screen and has the page colour,
+ * so scrolled content disappears under it instead of showing behind the status
+ * bar and the capsule menu. Its parent must be .tinker-root (the full page),
+ * or it would stop sticking as soon as a shorter parent scrolled away.
+ */
+.tinker-top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: var(--bg-primary);
+  padding-bottom: 6px;
+}
+
+.tinker-top-inner {
+  width: 100%;
   max-width: 960px;
   margin: 0 auto;
-  padding: 16px 20px 48px;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  padding: 0 20px;
 }
 
-/* Header */
-.tinker-header {
+/* Layout container. No top padding: the brand row above lines itself up with the capsule menu. */
+.tinker-container {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 20px 48px;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 0 20px;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* ---------------------------------------------------------------- header */
+
+.tinker-header {
+  padding-bottom: 16px;
   border-bottom: 1px solid var(--border-light);
   margin-bottom: 20px;
-}
-
-.brand-wrapper {
-  display: flex;
-  flex-direction: column;
 }
 
 .brand-title {
@@ -65,6 +218,7 @@ body {
   letter-spacing: 0.08em;
   color: var(--primary-green);
   line-height: 1.1;
+  white-space: nowrap;
 }
 
 .brand-tagline {
@@ -72,13 +226,15 @@ body {
   font-weight: 500;
   color: var(--text-muted);
   letter-spacing: 0.02em;
-  margin-top: 4px;
 }
 
+/* The pills sit in their own row under the brand, clear of the capsule menu at the top right. */
 .status-pills {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px 10px;
+  margin-top: 12px;
 }
 
 .status-pill {
@@ -97,22 +253,30 @@ body {
 .status-pill.connected {
   color: var(--primary-green-hover);
   background: var(--primary-green-light);
-  border-color: #C3D5C0;
+  border-color: var(--green-border);
 }
 
 .status-dot {
   width: 8px;
   height: 8px;
+  flex-shrink: 0;
   border-radius: 50%;
-  background-color: #9CA3AF;
+  background-color: var(--dot-idle);
 }
 
 .status-pill.connected .status-dot {
   background-color: var(--primary-green);
-  box-shadow: 0 0 0 3px rgba(102, 139, 91, 0.2);
+  box-shadow: 0 0 0 3px var(--green-glow);
 }
 
-/* Top Navigation Tabs */
+.connection-message {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+/* ---------------------------------------------------------------- tabs */
+
 .tab-navigation {
   display: flex;
   background: var(--bg-card);
@@ -130,6 +294,7 @@ body {
   justify-content: center;
   gap: 8px;
   padding: 10px 16px;
+  font-family: inherit;
   font-size: 0.95rem;
   font-weight: 600;
   border: none;
@@ -140,17 +305,14 @@ body {
   transition: all 0.18s ease;
 }
 
-.tab-btn:hover {
-  color: var(--text-main);
-}
-
 .tab-btn.active {
   background: var(--primary-green);
-  color: #FFFFFF;
-  box-shadow: 0 2px 8px rgba(102, 139, 91, 0.3);
+  color: var(--on-primary);
+  box-shadow: var(--shadow-tab);
 }
 
-/* General Card */
+/* ---------------------------------------------------------------- cards and buttons */
+
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border-light);
@@ -160,13 +322,13 @@ body {
   transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
-/* Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   padding: 10px 20px;
+  font-family: inherit;
   font-size: 0.95rem;
   font-weight: 600;
   border-radius: var(--radius-md);
@@ -177,13 +339,7 @@ body {
 
 .btn-primary {
   background: var(--primary-green);
-  color: #FFFFFF;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--primary-green-hover);
-  box-shadow: 0 4px 12px rgba(102, 139, 91, 0.25);
-  transform: translateY(-1px);
+  color: var(--on-primary);
 }
 
 .btn-secondary {
@@ -192,19 +348,9 @@ body {
   color: var(--text-main);
 }
 
-.btn-secondary:hover:not(:disabled) {
-  background: var(--bg-sage);
-  border-color: #C3D5C0;
-}
-
 .btn-danger {
   background: var(--recording-red);
-  color: #FFFFFF;
-}
-
-.btn-danger:hover:not(:disabled) {
-  background: #D03D3D;
-  box-shadow: 0 4px 12px rgba(228, 90, 90, 0.3);
+  color: var(--on-danger);
 }
 
 .btn:disabled {
@@ -213,7 +359,113 @@ body {
   transform: none !important;
 }
 
-/* Teaching View */
+/* A pressed look for touch screens. */
+.btn:active:not(:disabled),
+.tab-btn:active {
+  transform: scale(0.98);
+}
+
+/* Hover looks only where a pointer can hover. On a touch screen a hover style would stick after a tap. */
+@media (hover: hover) {
+  .tab-btn:hover {
+    color: var(--text-main);
+  }
+  .tab-btn.active:hover {
+    color: var(--on-primary);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--primary-green-hover);
+    box-shadow: var(--shadow-btn);
+    transform: translateY(-1px);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--bg-sage);
+    border-color: var(--green-border);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: var(--recording-red-hover);
+    box-shadow: var(--shadow-danger);
+  }
+  .tutorial-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-hover);
+    border-color: var(--green-border);
+  }
+}
+
+/* A button as wide as its box: the one main action of a screen. */
+.btn-wide {
+  width: 100%;
+}
+
+.btn-small {
+  padding: 8px 12px;
+  font-size: 0.85rem;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* ---------------------------------------------------------------- sentences: error, note, hint */
+
+/* One red sentence for a failure. Used on every screen. */
+.error-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--recording-red-light);
+  border-left: 3px solid var(--recording-red);
+  color: var(--error-text);
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: left;
+  margin: 0 0 12px;
+}
+
+.error-line svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* A plain note, in the same shape as a step tip. */
+.note-line {
+  background: var(--bg-sage);
+  border-left: 3px solid var(--primary-green);
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  color: var(--text-main);
+  text-align: left;
+  margin: 0 0 12px;
+}
+
+.field-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.connecting-card {
+  text-align: center;
+  padding: 36px 20px;
+}
+
+.connecting-card h2 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.connecting-card p {
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- teaching: idle */
+
 .teaching-hero {
   text-align: center;
   padding: 36px 20px;
@@ -227,7 +479,7 @@ body {
   margin-bottom: 8px;
 }
 
-.teaching-hero p {
+.hero-text {
   color: var(--text-muted);
   font-size: 1rem;
   max-width: 520px;
@@ -237,8 +489,8 @@ body {
 .hardware-checklist {
   display: flex;
   justify-content: center;
-  gap: 16px;
-  margin-bottom: 28px;
+  gap: 10px 16px;
+  margin-bottom: 24px;
   flex-wrap: wrap;
 }
 
@@ -259,7 +511,29 @@ body {
   background: var(--primary-green-light);
 }
 
-/* Recording State */
+/* The "What are you teaching?" box. Left-aligned inside the centred card. */
+.hero-field {
+  text-align: left;
+  max-width: 520px;
+  margin: 0 auto 20px;
+}
+
+.optional {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.btn-hero {
+  padding: 14px 32px;
+  font-size: 1.1rem;
+}
+
+.teaching-hero .field-hint {
+  margin-top: 10px;
+}
+
+/* ---------------------------------------------------------------- teaching: recording */
+
 .recording-panel {
   display: flex;
   flex-direction: column;
@@ -274,7 +548,7 @@ body {
   gap: 8px;
   padding: 6px 14px;
   background: var(--recording-red-light);
-  color: var(--recording-red);
+  color: var(--error-text);
   border-radius: 9999px;
   font-weight: 700;
   font-size: 0.85rem;
@@ -292,9 +566,9 @@ body {
 }
 
 @keyframes pulse {
-  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(228, 90, 90, 0.7); }
-  70% { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(228, 90, 90, 0); }
-  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(228, 90, 90, 0); }
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 var(--red-glow); }
+  70% { transform: scale(1.1); box-shadow: 0 0 0 8px var(--red-glow-clear); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 var(--red-glow-clear); }
 }
 
 .timer-display {
@@ -303,24 +577,82 @@ body {
   font-variant-numeric: tabular-nums;
   color: var(--text-main);
   letter-spacing: -0.02em;
+  line-height: 1.1;
   margin-bottom: 8px;
 }
 
 .frame-count-badge {
   font-size: 0.9rem;
   color: var(--text-muted);
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
+/* These stretch across the card. Everything else in the panel stays centred. */
+.recording-panel .error-line,
+.recording-panel .heard-box,
+.recording-panel .recording-controls {
+  align-self: stretch;
+}
+
+/* The words heard since the last saved step. */
+.heard-box {
+  background: var(--bg-sage);
+  border-left: 3px solid var(--primary-green);
+  border-radius: 4px;
+  padding: 8px 14px 10px;
+  text-align: left;
+  margin-bottom: 16px;
+}
+
+.heard-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/*
+ * At most three lines. column-reverse pins the text to the bottom of the box,
+ * so when it is longer the OLDEST words are cut off and the newest stay visible.
+ */
+.heard-text {
+  display: flex;
+  flex-direction: column-reverse;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  max-height: calc(1.45em * 3);
+  overflow: hidden;
+  color: var(--text-main);
+}
+
+/* Save takes the first row alone. Finish and Discard share the second. */
+.recording-controls {
+  flex-wrap: wrap;
+  margin-top: 0;
+  margin-bottom: 16px;
+}
+
+.recording-controls .btn {
+  flex: 1 1 calc(50% - 6px);
+}
+
+.recording-controls .btn.btn-wide {
+  flex: 1 1 100%;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+/* The last photo. Tall on a wide screen, lower on a phone (see the media rule at the end). */
 .viewfinder-preview {
   width: 100%;
   max-width: 580px;
   height: 320px;
   border-radius: var(--radius-md);
-  background: #111;
+  background: var(--viewfinder-bg);
   overflow: hidden;
   position: relative;
-  margin-bottom: 24px;
+  margin-bottom: 12px;
   border: 2px solid var(--border-light);
   display: flex;
   align-items: center;
@@ -335,7 +667,7 @@ body {
 }
 
 .viewfinder-placeholder {
-  color: #A0AEC0;
+  color: var(--viewfinder-text);
   font-size: 0.9rem;
   display: flex;
   flex-direction: column;
@@ -343,7 +675,64 @@ body {
   gap: 8px;
 }
 
-/* Learning Catalog */
+/* A small label on the photo: saved step or timed photo. */
+.viewfinder-tag {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: var(--photo-tag-bg);
+  color: var(--photo-tag-text);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- teaching: processing */
+
+.processing-card {
+  text-align: center;
+  padding: 48px 20px;
+}
+
+.processing-icon {
+  display: block;
+  margin: 0 auto 16px;
+  color: var(--primary-green);
+}
+
+.processing-card h3 {
+  font-size: 1.4rem;
+  margin-bottom: 8px;
+}
+
+.processing-card > p {
+  color: var(--text-muted);
+  max-width: 480px;
+  margin: 0 auto 20px;
+}
+
+.progress-bar-container.processing-bar {
+  max-width: 360px;
+  margin: 0 auto 20px;
+}
+
+/* A piece of bar that slides for ever. It says "working" and nothing about how far. */
+.progress-bar-indeterminate {
+  height: 100%;
+  width: 40%;
+  background: var(--primary-green);
+  border-radius: 9999px;
+  animation: slide 1.4s infinite ease-in-out;
+}
+
+@keyframes slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+/* ---------------------------------------------------------------- learning: library */
+
 .catalog-header {
   display: flex;
   justify-content: space-between;
@@ -355,6 +744,11 @@ body {
   font-size: 1.4rem;
   font-weight: 700;
   color: var(--text-main);
+}
+
+.catalog-count {
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 .tutorial-grid {
@@ -372,13 +766,14 @@ body {
   background: var(--bg-card);
   border: 1px solid var(--border-light);
   box-shadow: var(--shadow-card);
-  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
-.tutorial-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-hover);
-  border-color: #C3D5C0;
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
 }
 
 .tutorial-tag {
@@ -392,6 +787,17 @@ body {
   border-radius: 9999px;
   margin-bottom: 12px;
   text-transform: uppercase;
+}
+
+.tag-row .tutorial-tag {
+  margin-bottom: 0;
+}
+
+/* The lesson that ships with the app: an outlined tag, so it reads as a label and not a category. */
+.tutorial-tag.built-in {
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: inset 0 0 0 1px var(--green-border);
 }
 
 .tutorial-title {
@@ -419,7 +825,25 @@ body {
   margin-bottom: 16px;
 }
 
-/* Active Learning Session */
+/* Start fills the row. Delete, when there is one, keeps its own width beside it. */
+.card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.card-start {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A lesson that is still running after the person went back to the library. */
+.in-progress-card {
+  margin-bottom: 20px;
+  border-color: var(--primary-green);
+}
+
+/* ---------------------------------------------------------------- learning: session */
+
 .session-layout {
   display: flex;
   flex-direction: column;
@@ -430,8 +854,26 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border-light);
+}
+
+.session-header .btn {
+  flex-shrink: 0;
+}
+
+.session-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .progress-bar-container {
@@ -440,7 +882,7 @@ body {
   background: var(--border-light);
   border-radius: 9999px;
   overflow: hidden;
-  margin: 12px 0 16px;
+  margin: 12px 0 0;
 }
 
 .progress-bar-fill {
@@ -479,7 +921,7 @@ body {
 .step-detailed {
   font-size: 0.95rem;
   color: var(--text-muted);
-  margin-bottom: 16px;
+  margin-bottom: 4px;
 }
 
 .step-tips {
@@ -492,24 +934,130 @@ body {
   margin-top: 12px;
 }
 
+/*
+ * The check card: verdict and photos, under the step buttons.
+ * A photo with its caption disappears when its link is dead (see Photo in Parts.tsx).
+ */
+.check-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* One photo fills the row. Two photos (the expert's and the learner's) share it. */
+.photo-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
 .step-image-preview {
+  display: block;
   width: 100%;
+  aspect-ratio: 4 / 3;
   max-height: 260px;
   border-radius: var(--radius-md);
   object-fit: cover;
-  margin-top: 16px;
   border: 1px solid var(--border-light);
 }
 
-/* Tinker Assistant Status */
+.photo-caption {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.verdict .step-tips,
+.verdict .error-line {
+  margin: 10px 0 0;
+}
+
+.verdict-chip.pass {
+  background: var(--primary-green-light);
+  color: var(--primary-green-hover);
+}
+
+.verdict-chip.fix {
+  background: var(--recording-red-light);
+  color: var(--error-text);
+}
+
+.verdict-chip.unclear {
+  background: var(--thinking-bg);
+  color: var(--thinking-text);
+}
+
+/* "Check my step" and the three step buttons, directly under the step. */
+.step-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step-actions .btn-wide {
+  padding-top: 13px;
+  padding-bottom: 13px;
+  font-size: 1.05rem;
+}
+
+.step-actions .note-line {
+  margin: 0;
+}
+
+.check-hint {
+  text-align: center;
+}
+
+.session-controls {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.step-actions .session-controls {
+  margin-top: 0;
+}
+
+/* The voice status */
 .tinker-status-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 14px 20px;
   background: var(--bg-card);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-light);
+}
+
+.assistant-who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.assistant-icon {
+  color: var(--primary-green);
+  flex-shrink: 0;
+}
+
+.assistant-name {
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.assistant-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.assistant-state {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 .tinker-pill {
@@ -528,13 +1076,13 @@ body {
 }
 
 .tinker-pill.listening {
-  background: #E0F2FE;
-  color: #0369A1;
+  background: var(--listening-bg);
+  color: var(--listening-text);
 }
 
 .tinker-pill.thinking {
-  background: #FEF3C7;
-  color: #B45309;
+  background: var(--thinking-bg);
+  color: var(--thinking-text);
 }
 
 .tinker-pill.speaking {
@@ -542,7 +1090,20 @@ body {
   color: var(--primary-green-hover);
 }
 
-/* Audio Waveform Animation */
+.tinker-pill.idle .status-dot,
+.tinker-pill.speaking .status-dot {
+  background-color: var(--primary-green);
+}
+
+.tinker-pill.listening .status-dot {
+  background-color: var(--listening-dot);
+}
+
+.tinker-pill.thinking .status-dot {
+  background-color: var(--thinking-dot);
+}
+
+/* Four bars that move only while the glasses speak. */
 .waveform {
   display: flex;
   align-items: center;
@@ -570,7 +1131,7 @@ body {
   50% { height: 18px; }
 }
 
-/* Conversation Transcript */
+/* The conversation. The list scrolls inside the card. The page does not move. */
 .transcript-card {
   padding: 20px;
   background: var(--bg-card);
@@ -578,7 +1139,7 @@ body {
   border: 1px solid var(--border-light);
   display: flex;
   flex-direction: column;
-  max-height: 300px;
+  max-height: 360px;
 }
 
 .transcript-header {
@@ -606,6 +1167,7 @@ body {
   border-radius: var(--radius-md);
   font-size: 0.9rem;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .transcript-item.tinker {
@@ -617,7 +1179,7 @@ body {
 .transcript-item.user {
   align-self: flex-end;
   background: var(--primary-green);
-  color: #FFFFFF;
+  color: var(--on-primary);
 }
 
 .transcript-item.system {
@@ -629,25 +1191,116 @@ body {
   padding: 4px;
 }
 
+/* A sentence the person is still saying. Its finished version replaces it. */
+.transcript-item.unfinished {
+  opacity: 0.65;
+  font-style: italic;
+}
+
 .transcript-meta {
   font-size: 0.7rem;
   opacity: 0.7;
   margin-top: 4px;
 }
 
-/* Session Controls */
-.session-controls {
+/* min-width: 0 lets the box shrink on a narrow phone instead of pushing Send out of the card. */
+.ask-form {
   display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  margin-top: 10px;
+  gap: 8px;
+  margin-top: 12px;
 }
 
-/* Review / Publishing Form */
+.ask-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+}
+
+.ask-send {
+  flex-shrink: 0;
+  padding: 8px 14px;
+}
+
+/* ---------------------------------------------------------------- forms, review, settings */
+
 .review-form {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.review-form .error-line,
+.review-form .note-line,
+.settings-card .error-line,
+.settings-card .note-line {
+  margin: 0;
+}
+
+.review-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-light);
+  padding-bottom: 12px;
+}
+
+.review-heading h3 {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.review-heading .tutorial-tag {
+  margin-bottom: 0;
+  flex-shrink: 0;
+}
+
+.review-steps-title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 10px;
+}
+
+.review-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-step {
+  padding: 12px 16px;
+  background: var(--bg-sage);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--primary-green);
+  font-size: 0.9rem;
+  color: var(--text-main);
+}
+
+.review-step-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.review-step-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.review-step-done {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
 }
 
 .form-group {
@@ -662,34 +1315,150 @@ body {
   color: var(--text-main);
 }
 
+/* 16px text: iOS zooms the page when a smaller input gets the focus. */
 .form-input, .form-textarea {
   padding: 10px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-light);
   font-family: inherit;
-  font-size: 0.95rem;
-  background: #FFFFFF;
+  font-size: 1rem;
+  background: var(--bg-input);
   color: var(--text-main);
+  width: 100%;
+}
+
+.form-input::placeholder, .form-textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 0.8;
 }
 
 .form-input:focus, .form-textarea:focus {
   outline: none;
   border-color: var(--primary-green);
-  box-shadow: 0 0 0 3px rgba(102, 139, 91, 0.15);
+  box-shadow: var(--focus-ring);
 }
 
-/* Mobile responsive */
+/* The settings card under the library, and the key card on the Teaching tab. */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.settings-card.key-card {
+  margin: 0 0 20px;
+}
+
+.settings-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.key-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The spoken commands: the words on the left, what they do on the right. */
+.say-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 8px 0 2px;
+}
+
+.say-row {
+  display: grid;
+  grid-template-columns: 9em 1fr;
+  gap: 10px;
+  font-size: 0.85rem;
+  padding: 4px 0;
+}
+
+.say-row dt {
+  font-weight: 700;
+}
+
+.say-row dd {
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- phones */
+
 @media (max-width: 640px) {
   .tinker-container {
-    padding: 12px 14px 32px;
+    padding: 0 14px 24px;
+  }
+  .tinker-top-inner {
+    padding: 0 14px;
   }
   .tinker-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
+    padding-bottom: 14px;
+    margin-bottom: 16px;
+  }
+  .tab-navigation {
+    margin-bottom: 16px;
+  }
+  /* Compact, so that Start Recording is above the bottom edge of a small phone. */
+  .teaching-hero {
+    padding: 22px 18px;
+  }
+  .hero-text {
+    margin-bottom: 16px;
+  }
+  .hardware-checklist {
+    gap: 8px;
+    margin-bottom: 18px;
+  }
+  .checklist-item {
+    font-size: 0.8rem;
+    padding: 5px 10px;
+  }
+  .hero-field {
+    margin-bottom: 16px;
+  }
+  .btn-hero {
+    width: 100%;
+    padding: 14px 20px;
+  }
+  /* Compact, so that Save, Finish and Discard are all above the bottom edge of a small phone. */
+  .recording-panel {
+    padding: 18px 16px;
+  }
+  .record-indicator {
+    margin-bottom: 8px;
   }
   .timer-display {
     font-size: 2.5rem;
+    margin-bottom: 2px;
+  }
+  .frame-count-badge {
+    margin-bottom: 12px;
+  }
+  .heard-box {
+    margin-bottom: 12px;
+  }
+  /* The old fixed 320px pushed the buttons off a small screen. */
+  .viewfinder-preview {
+    height: auto;
+    aspect-ratio: 4 / 3;
+    max-height: 220px;
+  }
+  /* Tighter, so that "Check my step" is on the first screen for a step of normal length. */
+  .session-layout {
+    gap: 12px;
+  }
+  .session-title {
+    font-size: 1.1rem;
+  }
+  .step-card {
+    padding: 20px 18px;
   }
   .step-instruction {
     font-size: 1.15rem;
@@ -699,5 +1468,23 @@ body {
   }
   .session-controls .btn {
     flex: 1 1 calc(50% - 6px);
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .review-actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
+/* People who asked their phone for less motion get none of the looping animations. */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot,
+  .speaking .wave-bar,
+  .progress-bar-indeterminate {
+    animation: none;
+  }
+  .progress-bar-indeterminate {
+    width: 100%;
+    opacity: 0.5;
   }
 }

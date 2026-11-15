@@ -1,3 +1,6 @@
+// Based on Mentra's template (create-mentra-miniapp 0.1.0-beta.2), with a
+// Windows path workaround for the background runtime guard. `bun run build` runs it.
+
 /**
  * Production build script — two-output bundle.
  *
@@ -29,11 +32,9 @@
  */
 
 import {rm} from "fs/promises"
-import path from "node:path"
-import {reactSingletonPlugin} from "@mentra/miniapp-cli/build-helpers"
+import {backgroundRuntimeGuardPlugin, reactSingletonPlugin} from "@mentra/miniapp-cli/build-helpers"
 
-const rootDir = import.meta.dir
-const distDir = path.resolve(rootDir, "dist")
+const distDir = "./dist"
 
 // Wipe dist/ so old chunks don't accumulate across builds.
 await rm(distDir, {recursive: true, force: true})
@@ -47,11 +48,27 @@ for (const [k, v] of Object.entries(process.env)) {
   }
 }
 
+const backgroundGuard = backgroundRuntimeGuardPlugin(import.meta.url)
+
 const backgroundResult = await Bun.build({
-  entrypoints: [path.resolve(rootDir, "src/background/index.ts")],
-  outdir: path.resolve(distDir, "background"),
+  entrypoints: ["./src/background/index.ts"],
+  outdir: `${distDir}/background`,
   target: "browser",
   format: "iife",
+  plugins: [{
+    ...backgroundGuard,
+    setup(build) {
+      backgroundGuard.setup({
+        onResolve: build.onResolve.bind(build),
+        onLoad(options, callback) {
+          // TypeScript normalizes filenames to forward slashes, but the CLI's
+          // single-file compiler host compares them literally. Backslashes leave
+          // the source outside its program and symbol lookup crashes on Windows.
+          build.onLoad(options, (args) => callback({...args, path: args.path.replaceAll("\\", "/")}))
+        },
+      })
+    },
+  }],
   minify: false,
   define,
 })
@@ -63,8 +80,8 @@ if (!backgroundResult.success) {
 }
 
 const uiResult = await Bun.build({
-  entrypoints: [path.resolve(rootDir, "src/ui/index.html")],
-  outdir: path.resolve(distDir, "ui"),
+  entrypoints: ["./src/ui/index.html"],
+  outdir: `${distDir}/ui`,
   target: "browser",
   plugins: [reactSingletonPlugin(import.meta.url)],
   minify: true,
