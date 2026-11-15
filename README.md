@@ -5,6 +5,21 @@
 
 ---
 
+## A Brief History of Matcha
+
+Matcha has its roots in China's powdered tea traditions. In the late 12th century, the Buddhist monk Eisai brought tea seeds and methods of preparing powdered tea from China to Japan, where the practice became closely connected with Zen Buddhism. [Matchaful][1]
+
+Over time, Uji became an important center of tea cultivation, and matcha became central to the Japanese tea ceremony, shaped by tea masters such as Sen no Rikyu. These traditions continue today alongside matcha's wider use in drinks and sweets. [Yamamasa Koyamaen][2]
+
+Zen Master Sen no Rikyu helped popularize the tea ceremony tradition developed by Murata Juko. The four principles associated with Rikyu's teaching express the spirit of the ceremony:
+
+- **Harmony (*wa*)**
+- **Respect (*kei*)**
+- **Purity (*sei*)**
+- **Tranquility (*jaku*)**
+
+The Japanese tea ceremony is known as *Chado* or *Sado*, meaning "The Way of Tea." These principles give matcha preparation a deeper purpose: taking care with each movement, respecting the people sharing the tea, and making space for a quiet, attentive moment. [Matchaful][1]
+
 ## Overview
 
 **Tinker** passes a hands-on skill from an expert to a beginner through a pair of Mentra Live smart glasses. The glasses have a camera, a microphone, a speaker, one button and a light. They have no display.
@@ -155,26 +170,10 @@ All three must pass before a commit. Start reading at `AGENTS.md`.
 
 Photos are requested from the glasses at medium size. Without Wi-Fi on the glasses, Mentra's source says a photo travels over Bluetooth at about 640 x 640 pixels, so put the glasses on Wi-Fi for the demo (a phone hotspot works). Lessons are saved on the phone that recorded them and are not shared between phones.
 
----
+## Matcha Citations
 
-## Status
+- [Matchaful: The History of Matcha][1]
+- [Yamamasa Koyamaen: History of Matcha][2]
 
-Checked on 2026-11-14, on a computer, not on glasses:
-
-- The type-check and Mentra's build pass.
-- 153 automated tests pass. They run whole lessons against fake glasses and a fake Claude, draw the screens in a fake browser, and run the built app against a simulated phone.
-- The real Claude API: `my-miniapp/scripts/real-claude-test.ts` sends the app's own requests to Claude with a real key. It ran three times from a cloud machine, not from a phone. The first run passed 8 of 9 checks: the praise for a correct step was 14 words, over the test's limit of 12, while the verdict was right. The prompt was tightened, and the next two runs passed all 9. Building a lesson took 6 to 7.5 seconds, a photo check 1 to 3 seconds, an answer about 1 second. `my-miniapp/docs/TESTING.md`, section "Real Claude API test", has the details and a second program that runs the whole app against the real Claude API.
-
-Never run on real glasses:
-
-- photos, speech, the microphone and the light,
-- the button,
-- whether the app hears itself,
-- how long a check takes on a phone.
-
-`my-miniapp/docs/GLASSES_TEST.md` walks through the first test on real glasses. `my-miniapp/docs/DECISIONS.md` ends with the list of open questions.
-
-Two things for the team:
-
-- The built-in lesson's "what finished looks like" lines were written by an AI coding assistant from each step's text. A person should read them in `my-miniapp/src/background/seed.ts`.
-- With only those lines to go on, the photo check was strict. In all three runs it called a correct drawing of sifted matcha "fix" on the built-in lesson. On a lesson that Claude had built from the expert's pictures, the same kind of drawing passed. Record a lesson for the demo.
+[1]: https://www.matchaful.com/pages/the-history-of-matcha?srsltid=AYCX9vKXwyXbTwOSdakTBMDV7oAlwlDky4AjN4dAT2kHWuv01aq77a5a
+[2]: https://www.yamamasa-koyamaen.co.jp/en/matcha/basic/matcha-history.html
