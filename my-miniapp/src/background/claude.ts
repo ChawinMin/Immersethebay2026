@@ -167,6 +167,7 @@ Rules:
 - estimated_duration_minutes: how long a beginner needs for the whole task, in whole minutes.
 - tools_required: every tool the expert used, each in 1 to 3 words.
 - ingredients_required: every ingredient or material that gets used up, each in 1 to 4 words. Use an empty list if there are none.
+- When responding do not go over 25 words
 
 For each step:
 - title: a short name for the step, at most 6 words.

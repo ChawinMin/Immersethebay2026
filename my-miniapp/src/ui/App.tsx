@@ -119,6 +119,7 @@ export function App(): JSX.Element {
             leftPadding={0}
             bottomSpacer={false}
           />
+          <img src="icon.png" alt="title-icon" style={{width: 32, height: 32, objectFit: "contain"}}/>
         </div>
       </div>
 

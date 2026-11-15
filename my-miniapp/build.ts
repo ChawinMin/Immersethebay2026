@@ -1,5 +1,5 @@
-// Tinker note: this file is Mentra's build script, unchanged from their project
-// template (create-mentra-miniapp 0.1.0-beta.2). `bun run build` runs it.
+// Based on Mentra's template (create-mentra-miniapp 0.1.0-beta.2), with a
+// Windows path workaround for the background runtime guard. `bun run build` runs it.
 
 /**
  * Production build script — two-output bundle.
@@ -48,12 +48,27 @@ for (const [k, v] of Object.entries(process.env)) {
   }
 }
 
+const backgroundGuard = backgroundRuntimeGuardPlugin(import.meta.url)
+
 const backgroundResult = await Bun.build({
   entrypoints: ["./src/background/index.ts"],
   outdir: `${distDir}/background`,
   target: "browser",
   format: "iife",
-  plugins: [backgroundRuntimeGuardPlugin(import.meta.url)],
+  plugins: [{
+    ...backgroundGuard,
+    setup(build) {
+      backgroundGuard.setup({
+        onResolve: build.onResolve.bind(build),
+        onLoad(options, callback) {
+          // TypeScript normalizes filenames to forward slashes, but the CLI's
+          // single-file compiler host compares them literally. Backslashes leave
+          // the source outside its program and symbol lookup crashes on Windows.
+          build.onLoad(options, (args) => callback({...args, path: args.path.replaceAll("\\", "/")}))
+        },
+      })
+    },
+  }],
   minify: false,
   define,
 })

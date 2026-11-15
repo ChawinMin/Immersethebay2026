@@ -15,6 +15,12 @@ bun test             # all four test files
 
 The last three are "the three checks". All must pass before a commit.
 
+### Windows build checker crash
+
+Mentra CLI `0.1.0-beta.2` can crash during a build with `getSymbolOfDeclaration(location).members` or `getSymbolOfDeclaration(container).members`, pointing at a source file at line 0. Its background runtime guard compares filenames literally in a single-file TypeScript compiler host, but TypeScript normalizes Windows backslashes to forward slashes. The source is then missing from the compiler program and symbol lookup crashes. This was reproduced on Windows with Bun 1.3.10 and 1.3.13; the normal `tsc` check passes.
+
+`build.ts` normalizes paths passed to the guard's load callback. The guard remains enabled, and dependency versions are unchanged. This is a build fix on a computer; it does not establish that the app works on glasses.
+
 Result on 2026-11-14: type-check 0 errors, build passes, `bun test` 153 pass in 4 files.
 
 | File | Tests |

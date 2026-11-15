@@ -51,7 +51,7 @@ The background is a bare JavaScript engine (`build.ts` names JavaScriptCore and 
 | `src/ui/Icons.tsx` | Inline SVG icons. |
 | `src/ui/styles.css` | All colours and sizes, in light and dark. |
 | `miniapp.json` | The manifest: name, package id `com.mentra.tinker`, permissions, hardware needs, entry files. |
-| `build.ts` | Mentra's build script, unchanged from their template. Makes `dist/background/index.js` and `dist/ui/`. |
+| `build.ts` | Mentra's build script with a Windows path workaround for the runtime guard. Makes `dist/background/index.js` and `dist/ui/`. |
 | `test/claude.test.ts`, `test/coach.test.ts`, `test/ui.test.tsx`, `test/phone.test.ts` | The four test files. See `docs/TESTING.md`. |
 | `test/fixtures/tut_matcha_ceremonial_01.json` | The team's original matcha lesson file. A test compares `seed.ts` with it. |
 | `scripts/real-claude-test.ts` | A program that runs `claude.ts` against the real Claude API. See `docs/TESTING.md` and `scripts/README.md`. |

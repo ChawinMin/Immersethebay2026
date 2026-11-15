@@ -119,7 +119,7 @@ registerMiniapp<Channels>(async (session) => {
     // output, which is the glasses when they are connected as Bluetooth audio.
     // The promise resolves when the speech has finished playing.
     async speak(text) {
-      await session.speaker.speak(text, {stopOtherAudio: true})
+      await session.speaker.speak(text, {volume: 1, stopOtherAudio: true})
     },
 
     // The light is a bonus. A failure here must never stop a lesson, so errors are swallowed.
