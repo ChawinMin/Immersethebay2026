@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/@mentra/miniapp-cli/schema/miniapp.schema.json",
+  "packageName": "com.tinker.app",
+  "version": "1.0.0",
+  "name": "Tinker",
+  "description": "An expert shows a task once. The glasses then coach a beginner through it, one step at a time.",
+  "icon": "icon.png",
+  "type": "standard",
+  "sdkVersion": "0.3.0",
+  "minHostVersion": "1.42.0",
+  "entry": {
+    "background": "background/index.js",
+    "ui": "ui/index.html"
+  },
+  "permissions": [
+    {"type": "CAMERA", "description": "Takes a photo of each step to build the lesson and to check the learner's work."},
+    {"type": "MICROPHONE", "description": "Hears the expert's explanation and the spoken commands."}
+  ],
+  "hardwareRequirements": [
+    {"type": "CAMERA", "level": "REQUIRED", "description": "Photos of each step"},
+    {"type": "MICROPHONE", "level": "REQUIRED", "description": "Narration and spoken commands"},
+    {"type": "SPEAKER", "level": "OPTIONAL", "description": "Reads each step aloud"},
+    {"type": "BUTTON", "level": "OPTIONAL", "description": "Press instead of speaking a command"},
+    {"type": "LIGHT", "level": "OPTIONAL", "description": "Green for a correct step, red for a fix"}
+  ]
+}
