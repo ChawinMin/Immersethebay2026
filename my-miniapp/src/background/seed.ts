@@ -46,7 +46,7 @@ export const BUILT_IN_TUTORIALS: TutorialModel[] = [
       "Fine Mesh Sifter"
     ],
     "ingredients_required": [
-      "Ceremonial Grade Matcha (2g)",
+      "Ceremonial Grade Matcha (4g)",
       "Filtered Hot Water at 80°C / 175°F (70ml)"
     ],
     "steps": [
