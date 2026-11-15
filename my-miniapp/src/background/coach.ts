@@ -35,6 +35,8 @@
  *   Two exceptions are remembered and run next: "stop" and "discard" always
  *   (so "End session" on the screen always works), and any command that
  *   arrives during a silent timed photo (the person cannot know one is running).
+ *   A check or a question that finds a stop waiting ends at once, without
+ *   speaking its verdict or answer (see `stopWaiting`).
  *
  * WHAT THE SCREEN IS TOLD
  *   Every change is sent as its own small message (`teachingState`,
@@ -51,6 +53,9 @@
  *   that matches what the app said in the last 10 seconds is dropped as an
  *   echo (`isEcho`); and no sentence the app says ends in a command (`defuse`),
  *   so an echo that slips through still does nothing.
+ *   One exception to the first: while recording, a finished sentence heard
+ *   while the app talks goes to the narration when it is not an echo, so the
+ *   expert's explanation is not lost. It never runs a command (`keepWhileTalking`).
  *
  * HOW TO READ IT
  *   1. settings and data shapes
@@ -77,6 +82,7 @@ import type {
   UiCommandChannel,
   UiEventChannel,
 } from "../shared/channels"
+import {PHOTO_MESSAGE} from "../shared/channels"
 import {helpText, normalize, parseCommand, type Command, type Mode} from "./commands"
 import {BrainError, type Brain, type CaptureInput, type Device, type ImageInput, type LessonDraft, type Verdict} from "./contracts"
 import {BUILT_IN_TUTORIALS} from "./seed"
@@ -120,17 +126,33 @@ const ECHO_PERCENT = 80
  * An echo arrives right after the app stops speaking. A person's answer comes later.
  * From this long after the speech ended, a finished sentence that is exactly one
  * command ("publish lesson" after "Say publish lesson to save it") is the person, not an echo.
- * Set it to ECHO_WINDOW_MS to drop those too.
+ * The audit simulated echoes 900 ms after the speech ended. A person who answers
+ * at once still needs time to say the words, so the finished sentence comes later
+ * than that. 2500 ms dropped such quick answers. Set it to ECHO_WINDOW_MS to drop them all.
  */
-const ECHO_REPLY_MS = 2500
+const ECHO_REPLY_MS = 1200
 /** How many of the app's last sentences are remembered for the echo check. */
 const ECHO_KEEP = 5
 /** A heard sentence with more words than this is never an echo: the app says nothing that long. */
 const ECHO_MAX_WORDS = 120
-/** Stop waiting for one Claude request after this long, so a lost connection cannot freeze the app. */
-const CLAUDE_GUARD_MS = 90 * 1000
+/**
+ * Stop waiting for a check, an answer or a key test after this long, so a lost
+ * connection cannot freeze the app. The iPhone ends a request after 60 seconds anyway.
+ */
+const CLAUDE_GUARD_MS = 30 * 1000
+/** The same for the lesson build. It sends up to 12 photos and Claude writes a whole lesson, so it may take longer. */
+const BUILD_GUARD_MS = 90 * 1000
+/** Kept photos whose bytes stay in memory once read. Photos are large and the phone's background engine is small. The oldest is dropped. */
+const MAX_CACHED_PHOTOS = 30
 /** After someone says only "Hey Tinker", their next sentence within this time is taken as the question. */
 const ASK_FOLLOW_MS = 8000
+/**
+ * The answer to a bare "Hey Tinker". Several words on purpose: the echo filter
+ * judges a sentence of two words or more by its words in order, and the echo of
+ * a one-word "Yes?" came back misheard as "Yes, yes." and was sent to Claude as
+ * the question. A follow-up made only of these words is never a question (see `heard`).
+ */
+const ASK_REPLY = "Yes? Ask your question."
 /** Conversation lines given to Claude together with a question. */
 const RECENT_LINES = 6
 /** Longest typed question, lesson title and lesson description accepted from the phone screen, in characters. */
@@ -325,6 +347,9 @@ function echoWords(text: string): string[] {
   return said ? said.split(" ").map((word) => NUMBER_WORDS.get(word) ?? word) : []
 }
 
+/** The words of the reply to a bare "Hey Tinker". A follow-up made only of these is that reply's echo. */
+const REPLY_WORDS = new Set(echoWords(ASK_REPLY))
+
 /**
  * How many words of `heard` appear in `said` in the same order (the longest
  * common subsequence). A piece cut out of `said` scores all of its words.
@@ -339,6 +364,17 @@ function wordsInOrder(heard: string[], said: string[]): number {
     previous = row
   }
   return previous[said.length]!
+}
+
+/**
+ * Could these heard words come from this sentence the app said? One word: when
+ * the app said that word. More words: when at least ECHO_PERCENT of them appear
+ * in the same order. Commands are not judged here: see `isEcho`.
+ */
+function echoOf(heard: string[], said: string[]): boolean {
+  if (heard.length === 1) return said.includes(heard[0]!)
+  // Whole numbers on both sides, so "4 of 5 words" is exactly 80 percent.
+  return wordsInOrder(heard, said) * 100 >= heard.length * ECHO_PERCENT
 }
 
 /** True when the sentence would be taken for a command, in any mode, if the microphone heard it. */
@@ -388,18 +424,99 @@ function vocabularyFor(lesson: TutorialModel): string[] {
   return words
 }
 
+/** True for a plain object, the only thing a saved lesson or step can be. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+/**
+ * One saved step, made safe to read aloud: a missing text becomes "" (never
+ * "undefined" in a spoken sentence) and an optional field of the wrong type is
+ * dropped. null when it is not an object at all. Fields this file does not know
+ * are kept as they are, so a field added later survives a restart.
+ */
+function cleanStep(value: unknown, lessonId: string, number: number): TutorialStepModel | null {
+  if (!isRecord(value)) return null
+  const step: TutorialStepModel = {
+    ...(value as object),
+    id: clean(value.id) || `${lessonId}_${number}`,
+    step_number: number,
+    title: clean(value.title),
+    instruction_spoken: clean(value.instruction_spoken),
+    instruction_detailed: clean(value.instruction_detailed),
+  }
+  const tips = cleanList(value.tips)
+  if (tips.length) step.tips = tips
+  else delete step.tips
+  for (const field of ["reference_image_url", "photo_key", "done_looks_like", "common_mistake", "story"] as const) {
+    const text = clean(value[field])
+    if (text) step[field] = text
+    else delete step[field]
+  }
+  for (const field of ["photo_taken_at", "source_timestamp_seconds"] as const) {
+    if (!Number.isFinite(value[field])) delete step[field]
+  }
+  return step
+}
+
+/**
+ * One saved lesson, made safe to use: steps that are not objects are dropped,
+ * the others are cleaned and numbered again from 1. null when it has no id or
+ * no step left. Fields this file does not know are kept as they are.
+ */
+function cleanLesson(value: unknown): TutorialModel | null {
+  if (!isRecord(value)) return null
+  const id = clean(value.id)
+  if (!id) return null
+  const steps: TutorialStepModel[] = []
+  for (const item of Array.isArray(value.steps) ? value.steps : []) {
+    const step = cleanStep(item, id, steps.length + 1)
+    if (step) steps.push(step)
+  }
+  if (steps.length === 0) return null
+  const lesson: TutorialModel = {
+    ...(value as object),
+    id,
+    // The same words the Coach uses when Claude writes no title. An empty one would be spoken as ". Say check...".
+    title: clean(value.title) || "Untitled lesson",
+    description: clean(value.description),
+    total_steps: steps.length,
+    estimated_duration_minutes: Math.min(120, Math.max(1, Math.round(Number(value.estimated_duration_minutes)) || 1)),
+    created_at: clean(value.created_at),
+    // The library holds published lessons only. Drafts are never stored.
+    status: "published",
+    tools_required: cleanList(value.tools_required),
+    ingredients_required: cleanList(value.ingredients_required),
+    steps,
+  }
+  const category = clean(value.category)
+  if (category) lesson.category = category
+  else delete lesson.category
+  // Only the lesson from seed.ts is built in. A stored lesson can always be deleted.
+  delete lesson.built_in
+  return lesson
+}
+
 /** Read the saved library. Anything that does not look like a lesson is left out instead of crashing later. */
 function readLibrary(raw: string): TutorialModel[] {
-  const parsed: unknown = JSON.parse(raw)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // A damaged value holds nothing that can be used. The next save replaces it.
+    return []
+  }
   if (!Array.isArray(parsed)) return []
   const builtIn = new Set(BUILT_IN_TUTORIALS.map((lesson) => lesson.id))
+  const seen = new Set<string>()
   const lessons: TutorialModel[] = []
   for (const item of parsed) {
-    if (!item || typeof item !== "object") continue
-    const lesson = item as TutorialModel
-    if (typeof lesson.id !== "string" || typeof lesson.title !== "string") continue
-    if (!Array.isArray(lesson.steps) || lesson.steps.length === 0) continue
+    const lesson = cleanLesson(item)
+    if (!lesson) continue
     if (builtIn.has(lesson.id)) continue // the built-in lesson is added from seed.ts, never stored
+    // Two lessons with one id: a delete would remove one and the screen would mix them up.
+    if (seen.has(lesson.id)) continue
+    seen.add(lesson.id)
     lessons.push(lesson)
   }
   return lessons.slice(0, MAX_LIBRARY)
@@ -426,6 +543,12 @@ export class Coach {
   private apiKey = ""
   /** Recorded lessons, newest first. The built-in lesson is not in here, it is added in `tutorials()`. */
   private recorded: TutorialModel[] = []
+  /**
+   * True when the phone failed to read the saved library at start. Lessons may
+   * be stored that this session never saw, so a plain save could wipe them.
+   * Every save reads the library again first (see `saveLibrary`).
+   */
+  private libraryUnread = false
 
   // teaching
   /** Made when a recording starts. Becomes part of the lesson id, the step ids and every photo name. */
@@ -476,6 +599,8 @@ export class Coach {
   private hearing = false
   /** The last few sentences the app said, newest last. `heard` drops their echo. */
   private spoken: Spoken[] = []
+  /** The words of the sentence being spoken right now, or null. It joins `spoken` only when it ends, but its echo can arrive sooner. */
+  private saying: string[] | null = null
 
   // photos
   /** False once Claude has refused photo links. From then on photo bytes are sent. Resets when the app restarts. */
@@ -499,12 +624,15 @@ export class Coach {
     } catch {
       this.apiKey = ""
     }
+    let raw: string | null = null
     try {
-      const raw = await this.device.storageGet(LIBRARY_STORE)
-      this.recorded = raw ? readLibrary(raw) : []
+      raw = await this.device.storageGet(LIBRARY_STORE)
     } catch {
-      this.recorded = []
+      // Not "no lessons": the phone did not answer. Remembered, so the next
+      // save cannot write over lessons this session has not seen.
+      this.libraryUnread = true
     }
+    this.recorded = raw ? readLibrary(raw) : []
     // A screen that opened before this finished has drawn an empty library and no key. Correct it.
     this.emitConnection()
     this.emitLibrary()
@@ -531,8 +659,10 @@ export class Coach {
     const key = clean(raw)
     try {
       if (key === "") {
-        this.apiKey = ""
+        // Delete on the phone first. If that fails the key is still saved there,
+        // so the app keeps using it and the screen keeps saying a key is saved.
         await this.device.storageDelete(KEY_STORE)
+        this.apiKey = ""
         this.emitConnection()
         return {ok: true, error: ""}
       }
@@ -558,7 +688,8 @@ export class Coach {
       return {ok: true, error: ""}
     } catch (err) {
       // The phone's storage failed. The screen gets a reason instead of a request that never answers.
-      return {ok: false, error: `The phone could not save the key. ${describe(err)}`}
+      const action = key === "" ? "remove" : "save"
+      return {ok: false, error: `The phone could not ${action} the key. ${describe(err)}`}
     }
   }
 
@@ -739,10 +870,25 @@ export class Coach {
     // The text comes straight from the phone. Anything that is not text is ignored.
     const sentence = typeof spoken === "string" ? spoken.trim() : ""
     if (!sentence) return
-    if (this.speaking || this.device.now() < this.quietUntil) return // the app's own voice
+    if (this.speaking || this.device.now() < this.quietUntil) {
+      // The microphone is full of the app's own voice now. Unfinished pieces are
+      // ignored, and so are finished sentences, except while recording: see `keepWhileTalking`.
+      if (isFinal && this.mode === "recording") this.keepWhileTalking(sentence)
+      return
+    }
     // The text of the app's own sentence can arrive after the quiet gap, because
     // speech-to-text is slow. An echo leaves no line, no narration and no command.
-    if (this.isEcho(sentence, isFinal)) return
+    // An unfinished piece of it is only held back: no line and no "listening"
+    // until a later piece holds words the app did not say.
+    if (this.isEcho(sentence, isFinal)) {
+      if (isFinal) {
+        // The sentence is over. A line opened by its first pieces must not stay
+        // unfinished on the screen, with "listening" stuck next to it.
+        this.closeOpenLine()
+        this.syncAssistant()
+      }
+      return
+    }
 
     // The phone first sends half-finished guesses, then the finished sentence.
     // Both go to the screen as ONE conversation line. Only the finished one can be a command.
@@ -767,9 +913,8 @@ export class Coach {
     if (hit) {
       // The whole sentence goes along, because the photo check tells Claude what the learner just said.
       job = hit.command === "ask" ? {command: "ask", question: hit.question, lineId: line.id} : {command: hit.command, heard: sentence}
-    } else if (this.mode === "learning" && this.device.now() < this.askUntil && echoWords(sentence).length >= 2) {
-      // "Hey Tinker." ... "Yes?" ... and this is the question, in a sentence of its own.
-      // One word alone is no question. It may also be the echo of "Yes?", which is too short for the echo check.
+    } else if (this.mode === "learning" && this.device.now() < this.askUntil && this.isFollowUp(sentence)) {
+      // "Hey Tinker." ... "Yes? Ask your question." ... and this is the question, in a sentence of its own.
       job = {command: "ask", question: sentence, lineId: line.id}
     }
     if (job) {
@@ -783,7 +928,8 @@ export class Coach {
   /** A press of the button on the glasses. */
   button(press: "short" | "long"): void {
     // A short press is the main action of the current mode. A long press is the second one.
-    // Not confirmed on real glasses: the Mentra App may keep presses for its own photo feature.
+    // Mentra's source (MentraOS commit f120725) sends presses of the glasses button to the
+    // miniapp as "short" or "long". Not yet tried on real glasses.
     if (this.mode === "idle") void this.run({command: press === "long" ? "teach" : "learn", tutorialId: ""})
     else if (this.mode === "recording") void this.run({command: press === "long" ? "finish" : "capture"})
     else if (this.mode === "review" && press === "short") void this.run({command: "publish"})
@@ -971,6 +1117,16 @@ export class Coach {
     return line
   }
 
+  /** Mark the sentence somebody was in the middle of as finished, so no line stays unfinished on the screen. */
+  private closeOpenLine(): void {
+    if (this.openLine) {
+      this.openLine.isFinal = true
+      this.send("transcriptionUpdate", {...this.openLine})
+      this.openLine = null
+    }
+    this.hearing = false
+  }
+
   private async say(text: string): Promise<void> {
     // Every spoken sentence goes through here. The screen shows it, and the
     // microphone is ignored while it plays (see `heard`).
@@ -978,13 +1134,10 @@ export class Coach {
     const words = defuse(text.trim())
     // A sentence somebody was in the middle of: its end will arrive while the
     // app talks and be ignored. Close the line now, or it stays unfinished forever.
-    if (this.openLine) {
-      this.openLine.isFinal = true
-      this.send("transcriptionUpdate", {...this.openLine})
-      this.openLine = null
-      this.hearing = false
-    }
+    this.closeOpenLine()
     this.addLine("tinker", words)
+    // Known before the first sound: speech-to-text can deliver the start of this sentence while it still plays.
+    this.saying = echoWords(words)
     this.speaking = true
     this.syncAssistant()
     try {
@@ -995,6 +1148,7 @@ export class Coach {
     } finally {
       const now = this.device.now()
       this.speaking = false
+      this.saying = null
       this.quietUntil = now + QUIET_AFTER_SPEECH_MS
       // Remembered with the time the speech ENDED: that is when its echo starts to arrive.
       this.spoken.push({words: echoWords(words), endedAt: now})
@@ -1005,38 +1159,90 @@ export class Coach {
     }
   }
 
+  /** What an echo can come from: the sentence being spoken now (age 0), and those that ended less than ECHO_WINDOW_MS ago. */
+  private recentSpeech(): Array<{words: string[]; age: number}> {
+    const now = this.device.now()
+    const recent: Array<{words: string[]; age: number}> = []
+    for (const said of this.spoken) {
+      const age = now - said.endedAt
+      if (age < ECHO_WINDOW_MS) recent.push({words: said.words, age})
+    }
+    if (this.saying) recent.push({words: this.saying, age: 0})
+    return recent
+  }
+
   /**
-   * Is this the app hearing itself? True when the sentence has at least two
-   * words and most of them appear, in order, in something the app said in the
-   * last ECHO_WINDOW_MS. One word is never an echo: "check" must always work.
+   * Is this the app hearing itself? True when the sentence matches something
+   * the app said in the last ECHO_WINDOW_MS (see `echoOf`): most of its words,
+   * in order, or for a single word, that word.
+   * Two exceptions, both for a finished sentence:
+   *   - one word that is a command is never an echo: "check" must always work.
+   *   - exactly one command ECHO_REPLY_MS after the speech is the person's reply.
    */
   private isEcho(sentence: string, isFinal: boolean): boolean {
     const heard = echoWords(sentence)
-    if (heard.length < 2) return false
+    if (heard.length === 0) return false
     // Longer than anything the app says. Checked first, because this runs for every piece of every sentence.
     if (heard.length > ECHO_MAX_WORDS) return false
-    const now = this.device.now()
-    for (const said of this.spoken) {
-      const age = now - said.endedAt
-      if (age >= ECHO_WINDOW_MS) continue
-      // Whole numbers on both sides, so "4 of 5 words" is exactly 80 percent.
-      if (wordsInOrder(heard, said.words) * 100 < heard.length * ECHO_PERCENT) continue
-      // The app said "Say publish lesson to save it" and the person answers
-      // "Publish lesson." a moment later. Those words are in the app's sentence,
-      // but an echo of them would have arrived sooner and not as a sentence of
-      // its own. So a finished sentence that is exactly one command is let through.
-      const hit = isFinal && age >= ECHO_REPLY_MS ? parseCommand(this.mode, sentence) : null
-      if (hit && hit.command !== "ask" && hit.before === "") continue
+    // Only a finished sentence can be a command. An unfinished piece is judged by its words alone.
+    const hit = isFinal ? parseCommand(this.mode, sentence) : null
+    if (hit && heard.length === 1) return false
+    // The app said "Say publish lesson to save it" and the person answers
+    // "Publish lesson." a moment later. Those words are in the app's sentence,
+    // but an echo of them would have arrived sooner. So a finished sentence that
+    // is exactly one command, that late, is let through.
+    const reply = hit !== null && hit.command !== "ask" && hit.before === ""
+    for (const said of this.recentSpeech()) {
+      if (!echoOf(heard, said.words)) continue
+      if (reply && said.age >= ECHO_REPLY_MS) continue
       return true
     }
     return false
+  }
+
+  /** True when the words come from what the app is saying or said in the last ECHO_WINDOW_MS. No exception for commands. */
+  private fromOwnSpeech(text: string): boolean {
+    const heard = echoWords(text)
+    if (heard.length === 0) return true // only punctuation: nothing to keep
+    if (heard.length > ECHO_MAX_WORDS) return false
+    return this.recentSpeech().some((said) => echoOf(heard, said.words))
+  }
+
+  /**
+   * A finished sentence heard while the app talks, or in the quiet gap after it.
+   * Only called while recording. The expert keeps explaining while the app says
+   * "Step 1 saved.", and a step explained in one sentence would otherwise vanish
+   * from the lesson. So the sentence goes to the narration, unless it is the
+   * app's own voice. It never runs a command: a command needs the app to be silent.
+   */
+  private keepWhileTalking(sentence: string): void {
+    if (this.fromOwnSpeech(sentence)) return
+    // Commands only count at the end of a sentence, and a command is not part
+    // of the explanation. Its words are cut off here, as in `heard`, and it does not run.
+    const hit = parseCommand(this.mode, sentence)
+    const words = hit ? hit.before : sentence
+    // The app's own words with a command after them are still the app's words.
+    if (!words || this.fromOwnSpeech(words)) return
+    this.userLine(sentence, true)
+    this.narration = `${this.narration} ${words}`.trim().slice(-MAX_NARRATION)
+    this.emitTeaching()
+  }
+
+  /**
+   * After a bare "Hey Tinker", is this sentence the question? One word alone is
+   * no question. A sentence made only of the words of the reply ("Yes, yes.",
+   * "Ask your question") is the reply's echo, heard wrong.
+   */
+  private isFollowUp(sentence: string): boolean {
+    const words = echoWords(sentence)
+    return words.length >= 2 && words.some((word) => !REPLY_WORDS.has(word))
   }
 
   // ---------- photos and Claude ----------
 
   /** Take a photo. Returns null when it fails. `sound: false` is the silent timed photo. */
   private async takeShot(key: string, sound: boolean): Promise<Shot | null> {
-    this.waitingOn = "Taking a photo"
+    this.waitingOn = PHOTO_MESSAGE
     this.syncAssistant()
     try {
       const photo = await this.device.takePhoto({sound})
@@ -1105,8 +1311,21 @@ export class Coach {
     // 5. Nothing left. The caller carries on without this photo.
     if (!data) return null
     // Only kept photos are remembered. A learner's photo is used once and dropped.
-    if (shot.key) this.photoBytes.set(name, data)
+    if (shot.key) this.rememberBytes(name, data)
     return {kind: "base64", data, mediaType: sniffMediaType(data, shot.mediaType)}
+  }
+
+  /** Keep a photo's bytes in memory, at most MAX_CACHED_PHOTOS of them. A long day of lessons must not fill the phone's memory. */
+  private rememberBytes(name: string, data: string): void {
+    // Deleted first, so a photo used again counts as the newest.
+    this.photoBytes.delete(name)
+    this.photoBytes.set(name, data)
+    while (this.photoBytes.size > MAX_CACHED_PHOTOS) {
+      // A Map lists its entries oldest first.
+      const oldest = this.photoBytes.keys().next().value
+      if (oldest === undefined) break
+      this.photoBytes.delete(oldest)
+    }
   }
 
   /**
@@ -1129,8 +1348,18 @@ export class Coach {
   }
 
   /** One request to Claude, with a time limit. A request that never answers would leave the app busy forever. */
-  private claude<T>(request: Promise<T>): Promise<T> {
-    return orFail(request, CLAUDE_GUARD_MS, "Claude did not answer in time.")
+  private claude<T>(request: Promise<T>, limitMs = CLAUDE_GUARD_MS): Promise<T> {
+    return orFail(request, limitMs, "Claude did not answer in time.")
+  }
+
+  /**
+   * True when "End session" (a stop) or a discard is waiting for the running
+   * command to end. A check or a question then stops at once, without speaking
+   * its result, and the waiting command runs next.
+   */
+  private stopWaiting(): boolean {
+    const next = this.waiting?.command
+    return next === "stop" || next === "discard"
   }
 
   /** Show "thinking" on the screen for as long as `work` takes. */
@@ -1226,8 +1455,12 @@ export class Coach {
   private async finishTeaching(): Promise<void> {
     if (this.mode !== "recording") return
     this.teachError = ""
-    // The expert explained a last step but did not say "next step", or never said it at all. Save it now.
-    if (this.narration || !this.captures.some((capture) => capture.kind === "step")) await this.captureStep(false)
+    // The last step still needs its "finished" photo when the expert explained it
+    // but did not say "next step", or never said "next step" at all, or a timed
+    // photo took its words (a timed photo shows the work half done).
+    const lastStep = this.captures.map((capture) => capture.kind).lastIndexOf("step")
+    const wordsAfterLastStep = this.captures.slice(lastStep + 1).some((capture) => capture.transcript)
+    if (this.narration || lastStep < 0 || wordsAfterLastStep) await this.captureStep(false)
     if (!this.captures.some((capture) => capture.transcript || capture.shot)) {
       // Not "...then say next step.": a sentence the app says must never end in a command (see `defuse`).
       return this.say("Nothing is recorded yet. Do a step and explain it, then say next step to save it.")
@@ -1281,7 +1514,7 @@ export class Coach {
         const image = keep.has(i) ? await this.imageFor(capture.shot, allowLink) : null
         inputs.push({transcript: capture.transcript, atSeconds: capture.atSeconds, kind: capture.kind, image})
       }
-      return this.claude(this.brain.buildLesson(this.apiKey, {captures: inputs, skillHint: this.skillHint}))
+      return this.claude(this.brain.buildLesson(this.apiKey, {captures: inputs, skillHint: this.skillHint}), BUILD_GUARD_MS)
     })
     return this.toTutorial(draft, captures)
   }
@@ -1368,7 +1601,8 @@ export class Coach {
     if (failed) this.note(`The lesson works now but was not saved to the phone. ${failed}`)
     this.emitLibrary()
     this.emitTeaching()
-    await this.say("Lesson published.")
+    // Not "Lesson published." when it is not on the phone: it is gone after a restart, and the expert must know that.
+    await this.say(failed ? "The lesson works now, but it could not be saved on this phone." : "Lesson published.")
   }
 
   /** "cancel lesson": throw away the recording, or the draft that came out of it. */
@@ -1444,8 +1678,15 @@ export class Coach {
     if (this.mode !== "learning" || !lesson || !step) return
     if (!this.apiKey) return this.say("Add the Claude key on the phone screen to use checks.")
 
+    // The old verdict is about the work as it was. A screen opened during this
+    // check, or after it failed, must not show it as the answer. The screen
+    // clears its own copy when it sees PHOTO_MESSAGE, which comes next.
+    this.lastVerdict = null
     // "" as the photo name: a learner's photo is not kept on the phone.
     const shot = await this.takeShot("", true)
+    // "End session" was pressed meanwhile. The remembered stop runs next and says "Lesson stopped.".
+    // The same test follows every wait below: nothing more is said or sent for a lesson that is over.
+    if (this.stopWaiting()) return
     if (!shot) return this.say("I could not take a photo. Say check to try again.")
 
     // Claude gets the expert's photo (when there is one) and the learner's photo.
@@ -1457,14 +1698,18 @@ export class Coach {
           const learner = await this.imageFor(shot, allowLink)
           if (!learner) throw new Error("The photo could not be read.")
           const reference = await this.imageFor(referenceShot(step), allowLink)
+          // Reading a kept photo can take a moment. No request for a lesson that has just ended.
+          if (this.stopWaiting()) throw new Error("The lesson was stopped.")
           return this.claude(
             this.brain.checkStep(this.apiKey, {tutorialTitle: lesson.title, step, learner, reference, heard: heardText}),
           )
         }),
       )
+      if (this.stopWaiting()) return
       const known = verdict.result === "pass" || verdict.result === "fix" || verdict.result === "unclear"
       if (!known || !clean(verdict.say)) throw new Error("Claude's answer could not be used.")
     } catch (err) {
+      if (this.stopWaiting()) return
       this.note(`The check failed. ${describe(err)}`)
       return this.say("I could not check that. Say check to try again.")
     }
@@ -1558,7 +1803,8 @@ export class Coach {
     if (!question) {
       // Only the name was said. Speech-to-text often ends the sentence at that
       // pause, so the question arrives as a sentence of its own. Invite it.
-      await this.say("Yes?")
+      await this.say(ASK_REPLY)
+      if (this.stopWaiting()) return
       this.askUntil = this.device.now() + ASK_FOLLOW_MS
       return
     }
@@ -1584,8 +1830,11 @@ export class Coach {
           ),
         ),
       )
+      // "End session" was pressed while Claude worked: the remembered stop runs next. No answer for a lesson that is over.
+      if (this.stopWaiting()) return
       if (!answer) throw new Error("Claude gave an empty answer.")
     } catch (err) {
+      if (this.stopWaiting()) return
       this.note(`The question failed. ${describe(err)}`)
       return this.say("I could not answer that. Ask again.")
     }
@@ -1600,14 +1849,41 @@ export class Coach {
 
   // ---------- the library ----------
 
-  /** Write the recorded lessons to the phone. Returns "" when it worked, the reason when it did not. */
+  /**
+   * Write the recorded lessons to the phone. Returns "" when it worked, the reason when it did not.
+   * The whole library is one stored value, so a write replaces every lesson on
+   * the phone. When it could not be read at start, it is read again first and
+   * merged. If it still cannot be read, nothing is written: the lessons on the
+   * phone stay safe, and the new lesson works until the app restarts.
+   */
   private async saveLibrary(): Promise<string> {
+    if (this.libraryUnread) {
+      let raw: string | null
+      try {
+        raw = await this.device.storageGet(LIBRARY_STORE)
+      } catch (err) {
+        return `The lessons already on the phone could not be read, so nothing was written over them. ${describe(err)}`
+      }
+      this.libraryUnread = false
+      this.mergeStored(raw ? readLibrary(raw) : [])
+    }
     try {
       await this.device.storageSet(LIBRARY_STORE, JSON.stringify(this.recorded))
       return ""
     } catch (err) {
       return describe(err)
     }
+  }
+
+  /** Add the stored lessons this session does not hold, matched by id. They were saved before this session began, so they go after its lessons. */
+  private mergeStored(stored: TutorialModel[]): void {
+    const known = new Set(this.recorded.map((lesson) => lesson.id))
+    const missing = stored.filter((lesson) => !known.has(lesson.id))
+    if (missing.length === 0) return
+    this.recorded = [...this.recorded, ...missing]
+    while (this.recorded.length > MAX_LIBRARY) this.forgetLesson(this.recorded.pop()!)
+    // The screen has been showing a library without them.
+    this.emitLibrary()
   }
 
   /**

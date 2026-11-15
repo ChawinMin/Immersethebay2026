@@ -69,8 +69,9 @@ const CHAT_MAX_TOKENS = 200
  *   Sonnet 5.5  refuses "disabled". Its off switch is "between_tools".
  *   Haiku 5.5   refuses "between_tools". Its off switch is "disabled".
  * Source: the table of models in Claude's docs, page
- * build-with-claude/thinking, read on 2026-11-14. Not yet tried against the
- * real API. When you change a model above, look up its row in that table.
+ * build-with-claude/thinking, read on 2026-11-14. Tried against the real API
+ * on 2026-11-14: both switches were accepted (scripts/real-claude-test.ts,
+ * 9 of 9 checks). When you change a model above, look up its row in that table.
  * If Claude answers HTTP 400 and names "thinking", this function is the place.
  */
 function thinkingOff(model: string): {type: string} {

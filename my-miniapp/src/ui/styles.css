@@ -432,6 +432,16 @@ body {
   margin-top: 2px;
 }
 
+/* The background's own words after the plain sentence of a known failure (Explained in Parts.tsx). */
+.error-detail {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  opacity: 0.85;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
 /* A plain note, in the same shape as a step tip. */
 .note-line {
   background: var(--bg-sage);
@@ -462,6 +472,13 @@ body {
 
 .connecting-card p {
   color: var(--text-muted);
+}
+
+/* After about ten seconds with no answer from the background. */
+.connecting-card .connecting-advice {
+  color: var(--text-main);
+  font-weight: 600;
+  margin-top: 8px;
 }
 
 /* ---------------------------------------------------------------- teaching: idle */
@@ -867,6 +884,13 @@ body {
   font-size: 1.25rem;
   font-weight: 700;
   line-height: 1.3;
+}
+
+/* Notes inside a lesson ("Step 1 passed. ...", "Ending after this sentence..."). The layout's gap spaces them. */
+.session-layout .session-note {
+  margin: 0;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .progress-labels {
@@ -1454,8 +1478,15 @@ body {
   .session-layout {
     gap: 12px;
   }
+  /* The built-in lesson's long title took three lines beside "End Session". With these two
+     it takes two, which keeps "Check my step" on the first screen at 390x844 also when a
+     two-line "Step N passed." note sits above the step. */
   .session-title {
-    font-size: 1.1rem;
+    font-size: 1rem;
+  }
+  .session-header .btn {
+    padding: 8px 12px;
+    font-size: 0.85rem;
   }
   .step-card {
     padding: 20px 18px;

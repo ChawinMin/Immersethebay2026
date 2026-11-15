@@ -16,32 +16,72 @@
  *   sets it. Tapping "Finish lesson" sends a command, and the tab changes only
  *   when the background reports the new status. That is why a failed start or
  *   a failed lesson build can never leave the screen showing something untrue.
+ *
+ * WHAT IS TYPED HERE IS KEPT BY App.tsx
+ *   The "What are you teaching?" box and the review boxes are held one level
+ *   up (`TeachingForms`). Switching to the Learning tab removes this tab from
+ *   the page, and the typed text would otherwise go with it.
  */
 
-import {useState} from "react"
+import {useEffect, useState} from "react"
 import type {JSX, ReactNode} from "react"
 import type {Channels, TutorialModel} from "../shared/channels"
 import {AlertIcon, CameraIcon, CheckCircleIcon, SparklesIcon, SquareIcon, VideoIcon} from "./Icons"
-import {ConfirmButton, ErrorLine, formatClock} from "./Parts"
+import {ConfirmButton, ErrorLine, formatClock, stepCount} from "./Parts"
 import {KeyCard} from "./Settings"
 import type {ScreenState} from "./state"
 
+/** How long the key card stays on this tab after a key was saved, so "Key saved." can be read. */
+const KEY_SAVED_MS = 2500
+
+/** The edited title and description of one draft. */
+export interface ReviewEdits {
+  draftId: string
+  title: string
+  description: string
+}
+
+/** What has been typed on this tab. App.tsx keeps it, so a tab switch does not lose it. */
+export interface TeachingForms {
+  /** The "What are you teaching?" box. */
+  skill: string
+  setSkill: (text: string) => void
+  /** The review boxes. They count only for the draft with the same id. null until the first edit. */
+  edits: ReviewEdits | null
+  setEdits: (edits: ReviewEdits) => void
+}
+
 /** Picks the panel for the status the background reported. */
-export function Teaching({state, busy}: {state: ScreenState; busy: boolean}): JSX.Element {
+export function Teaching({state, busy, forms, ending, onDiscard}: {
+  state: ScreenState
+  busy: boolean
+  forms: TeachingForms
+  /** True after Discard was tapped while the glasses were talking, until the background confirms. */
+  ending: boolean
+  /** Sends `discardTeaching`. */
+  onDiscard: () => void
+}): JSX.Element {
   const {teaching, draft, buildError} = state
 
   // Two places can carry a failure: `teachingState.error` and a failed "tutorialGenerated".
   // Both are shown. When they say the same thing it is shown once.
   const messages = [teaching.error ?? "", buildError].filter((text, index, all) => text && all.indexOf(text) === index)
   const errors = messages.map((text) => <ErrorLine key={text}>{text}</ErrorLine>)
+  // The background takes a discard at any time, but while the glasses talk it acts once the sentence is over.
+  const waiting = ending ? <p className="note-line">Ending after this sentence...</p> : null
 
-  if (teaching.status === "recording") return <Recording state={state} busy={busy} errors={errors} />
+  if (teaching.status === "recording") {
+    return <Recording state={state} busy={busy} errors={errors} waiting={waiting} onDiscard={onDiscard} />
+  }
   if (teaching.status === "processing") return <Processing errors={errors} />
   if (teaching.status === "review") {
-    // `key` gives a new draft fresh title and description boxes.
-    return draft ? <Review key={draft.id} draft={draft} busy={busy} errors={errors} /> : <ReviewWithoutDraft errors={errors} />
+    return draft ? (
+      <Review key={draft.id} draft={draft} busy={busy} errors={errors} forms={forms} waiting={waiting} onDiscard={onDiscard} />
+    ) : (
+      <ReviewWithoutDraft errors={errors} waiting={waiting} onDiscard={onDiscard} />
+    )
   }
-  return <TeachIdle state={state} busy={busy} errors={errors} />
+  return <TeachIdle state={state} busy={busy} errors={errors} forms={forms} />
 }
 
 /** One chip of the hardware checklist. The words change with the flag, not only the colour. */
@@ -55,21 +95,36 @@ function CheckItem({ok, yes, no}: {ok: boolean; yes: string; no: string}): JSX.E
 }
 
 /** Nothing is being recorded: the introduction, the checklist and the Start button. */
-function TeachIdle({state, busy, errors}: {state: ScreenState; busy: boolean; errors: ReactNode}): JSX.Element {
+function TeachIdle({state, busy, errors, forms}: {state: ScreenState; busy: boolean; errors: ReactNode; forms: TeachingForms}): JSX.Element {
   const {connection, learning} = state
-  // The only state here: the text in the box. It is sent to Claude as a hint, never invented.
-  const [skill, setSkill] = useState("")
   const lessonActive = learning?.active === true
 
+  // The background reports the new key (claudeReady) just BEFORE it answers the save,
+  // so the key card would vanish before "Key saved." could appear in it. The card
+  // therefore stays up while a save runs, and for a moment after one works.
+  const [keyCard, setKeyCard] = useState<"" | "saving" | "saved">("")
+  useEffect(() => {
+    if (keyCard !== "saved") return
+    const timer = setTimeout(() => setKeyCard(""), KEY_SAVED_MS)
+    return () => clearTimeout(timer)
+  }, [keyCard])
+
   const start = () => {
-    const targetSkill = skill.trim()
+    // The text is sent to Claude as a hint, never invented.
+    const targetSkill = forms.skill.trim()
     mentra.send("startTeaching", targetSkill ? {targetSkill} : {})
   }
 
   return (
     <div>
       {/* A recording cannot start without a key, so the key box comes first while none is saved. */}
-      {!connection.claudeReady && <KeyCard connection={connection} />}
+      {(!connection.claudeReady || keyCard !== "") && (
+        <KeyCard
+          connection={connection}
+          onStart={() => setKeyCard("saving")}
+          onDone={(saved) => setKeyCard(saved ? "saved" : "")}
+        />
+      )}
 
       <div className="card teaching-hero">
         <h2>Teach a Skill</h2>
@@ -92,10 +147,10 @@ function TeachIdle({state, busy, errors}: {state: ScreenState; busy: boolean; er
             id="teach-skill"
             type="text"
             className="form-input"
-            value={skill}
+            value={forms.skill}
             maxLength={80}
             placeholder="For example: tying a bowline knot"
-            onChange={(event) => setSkill(event.target.value)}
+            onChange={(event) => forms.setSkill(event.target.value)}
           />
         </div>
 
@@ -117,7 +172,13 @@ function TeachIdle({state, busy, errors}: {state: ScreenState; busy: boolean; er
  * The buttons come before the photo so that none of them falls below the edge
  * of a small phone, also when an error and a long sentence are showing.
  */
-function Recording({state, busy, errors}: {state: ScreenState; busy: boolean; errors: ReactNode}): JSX.Element {
+function Recording({state, busy, errors, waiting, onDiscard}: {
+  state: ScreenState
+  busy: boolean
+  errors: ReactNode
+  waiting: ReactNode
+  onDiscard: () => void
+}): JSX.Element {
   const {teaching, lastPhoto} = state
   return (
     <div className="card recording-panel">
@@ -151,22 +212,22 @@ function Recording({state, busy, errors}: {state: ScreenState; busy: boolean; er
           <span>Finish lesson</span>
         </button>
         {/* Never disabled: the background remembers a discard even while it is busy. */}
-        <ConfirmButton
-          label="Discard"
-          confirmLabel="Sure? Tap again"
-          className="btn btn-secondary"
-          onConfirm={() => mentra.send("discardTeaching", {})}
-        />
+        <ConfirmButton label="Discard" confirmLabel="Sure? Tap again" className="btn btn-secondary" onConfirm={onDiscard} />
       </div>
+      {waiting}
 
-      <Viewfinder photo={lastPhoto} />
+      <Viewfinder photo={lastPhoto} taken={teaching.frameCount} />
       <p className="field-hint">Say "next step" after each step. Say "finish lesson" at the end.</p>
     </div>
   )
 }
 
-/** The newest photo of this recording. A dead link or no photo shows plain words instead. */
-function Viewfinder({photo}: {photo: Channels["photoCapture"] | null}): JSX.Element {
+/**
+ * The newest photo of this recording. A dead link or no photo shows plain words instead.
+ * `taken` is the background's photo count. A screen opened in the middle of a
+ * recording has a count but no photo yet: a snapshot carries no photo links.
+ */
+function Viewfinder({photo, taken}: {photo: Channels["photoCapture"] | null; taken: number}): JSX.Element {
   // Remember WHICH link failed, so the next photo gets a fresh try.
   const [failed, setFailed] = useState("")
   const src = photo?.photoUrl ?? ""
@@ -181,7 +242,7 @@ function Viewfinder({photo}: {photo: Channels["photoCapture"] | null}): JSX.Elem
       ) : (
         <div className="viewfinder-placeholder">
           <CameraIcon size={32} />
-          <span>{src ? "The last photo could not be shown" : "No photo yet"}</span>
+          <span>{src ? "The last photo could not be shown" : taken > 0 ? "The next photo will show here" : "No photo yet"}</span>
         </div>
       )}
     </div>
@@ -208,11 +269,22 @@ function Processing({errors}: {errors: ReactNode}): JSX.Element {
 
 /**
  * The draft Claude wrote. The expert can change the title and the description,
- * then publish or discard. The two text boxes are the only state kept here.
+ * then publish or discard. The text in the boxes is kept by App.tsx.
  */
-function Review({draft, busy, errors}: {draft: TutorialModel; busy: boolean; errors: ReactNode}): JSX.Element {
-  const [title, setTitle] = useState(draft.title)
-  const [description, setDescription] = useState(draft.description)
+function Review({draft, busy, errors, forms, waiting, onDiscard}: {
+  draft: TutorialModel
+  busy: boolean
+  errors: ReactNode
+  forms: TeachingForms
+  waiting: ReactNode
+  onDiscard: () => void
+}): JSX.Element {
+  // The boxes start with Claude's text. Edits made for an earlier draft do not count.
+  const edits: ReviewEdits =
+    forms.edits && forms.edits.draftId === draft.id
+      ? forms.edits
+      : {draftId: draft.id, title: draft.title, description: draft.description}
+  const {title, description} = edits
 
   const publish = () => {
     // The background keeps its own copy of the draft and takes only the title and
@@ -229,7 +301,7 @@ function Review({draft, busy, errors}: {draft: TutorialModel; busy: boolean; err
     <div className="card review-form">
       <div className="review-heading">
         <h3>Review & Publish</h3>
-        <span className="tutorial-tag">{draft.steps.length} Steps</span>
+        <span className="tutorial-tag">{stepCount(draft.steps.length)}</span>
       </div>
 
       {errors}
@@ -238,7 +310,13 @@ function Review({draft, busy, errors}: {draft: TutorialModel; busy: boolean; err
         <label className="form-label" htmlFor="tut-title">
           Tutorial Title
         </label>
-        <input id="tut-title" type="text" className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} />
+        <input
+          id="tut-title"
+          type="text"
+          className="form-input"
+          value={title}
+          onChange={(event) => forms.setEdits({...edits, title: event.target.value})}
+        />
       </div>
 
       <div className="form-group">
@@ -250,7 +328,7 @@ function Review({draft, busy, errors}: {draft: TutorialModel; busy: boolean; err
           className="form-textarea"
           rows={3}
           value={description}
-          onChange={(event) => setDescription(event.target.value)}
+          onChange={(event) => forms.setEdits({...edits, description: event.target.value})}
         />
       </div>
 
@@ -279,13 +357,9 @@ function Review({draft, busy, errors}: {draft: TutorialModel; busy: boolean; err
         </div>
       </div>
 
+      {waiting}
       <div className="review-actions">
-        <ConfirmButton
-          label="Discard"
-          confirmLabel="Sure? Tap again"
-          className="btn btn-secondary"
-          onConfirm={() => mentra.send("discardTeaching", {})}
-        />
+        <ConfirmButton label="Discard" confirmLabel="Sure? Tap again" className="btn btn-secondary" onConfirm={onDiscard} />
         <button type="button" className="btn btn-primary" disabled={busy} onClick={publish}>
           <CheckCircleIcon size={18} />
           <span>Publish to Library</span>
@@ -296,7 +370,7 @@ function Review({draft, busy, errors}: {draft: TutorialModel; busy: boolean; err
 }
 
 /** The background says a draft is waiting but has not sent it. Say so, and offer the way out. */
-function ReviewWithoutDraft({errors}: {errors: ReactNode}): JSX.Element {
+function ReviewWithoutDraft({errors, waiting, onDiscard}: {errors: ReactNode; waiting: ReactNode; onDiscard: () => void}): JSX.Element {
   return (
     <div className="card review-form">
       <div className="review-heading">
@@ -304,13 +378,9 @@ function ReviewWithoutDraft({errors}: {errors: ReactNode}): JSX.Element {
       </div>
       {errors}
       <p className="note-line">A draft is waiting, but it has not reached this screen. Close the screen and open it again.</p>
+      {waiting}
       <div className="review-actions">
-        <ConfirmButton
-          label="Discard"
-          confirmLabel="Sure? Tap again"
-          className="btn btn-secondary"
-          onConfirm={() => mentra.send("discardTeaching", {})}
-        />
+        <ConfirmButton label="Discard" confirmLabel="Sure? Tap again" className="btn btn-secondary" onConfirm={onDiscard} />
       </div>
     </div>
   )

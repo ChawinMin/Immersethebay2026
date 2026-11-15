@@ -29,6 +29,15 @@
 
 import type {MentraTyped, Rpc} from "@mentra/miniapp/ui"
 
+/**
+ * The words the background sends with the "thinking" state while the glasses
+ * take a photo (`takeShot` in src/background/coach.ts). During a lesson that
+ * only happens at the start of a check, so the screen uses them to forget the
+ * old verdict (`applyEvent` in src/ui/state.ts). Both halves use this one
+ * constant, so the wording cannot drift apart.
+ */
+export const PHOTO_MESSAGE = "Taking a photo"
+
 // ---------------------------------------------------------------- lessons
 
 /** One step of a lesson. The field names use snake_case because saved lessons already use them. */

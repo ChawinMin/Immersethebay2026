@@ -20,11 +20,13 @@ Close the screen in the middle of a lesson, open it again, and it shows the same
 
 What the screen is allowed to keep, because the background has no use for it:
 
-- the text typed into a box (the key, the skill, the title and description of a draft, a question),
+- the text typed into a box (the key, the skill, the title and description of a draft, a question). The skill and the draft edits are kept in `App.tsx` (`TeachingForms`), so a tab switch does not lose them,
 - which tab and which view are showing,
 - whether a photo link loaded,
-- the "tap again" state of a Discard or Delete button,
-- the answer to the last "Save key".
+- the "tap again" state of a Discard, Delete or Remove key button,
+- the answer to the last "Save key", and whether the key card on the Teaching tab stays up for `KEY_SAVED_MS` (2.5 seconds) so "Key saved." can be read,
+- the note "Ending after this sentence..." after End or Discard was tapped while the glasses talk, until the background confirms or is at rest again,
+- whether snapshot requests have failed for `UNREACHABLE_MS` (10 seconds).
 
 Do not add anything else. In particular: no step counter, no lesson list, no transcript lines made on the screen, no status that changes before the background confirms it.
 
@@ -39,7 +41,9 @@ Do not add anything else. In particular: no step counter, no lesson list, no tra
 | `ScreenEvent` | One message from the background: `{channel, payload}` |
 | `applyEvent(state, event)` | A plain function: old state plus one event gives the new state. Nothing else writes the state. |
 | `isBusy(state)` | True while the background is in the middle of something |
-| `useTinker()` | The React hook that listens to the background and returns the latest `ScreenState` |
+| `useTinker()` | The React hook that listens to the background and returns `{state, unreachable}` (the type `Tinker`) |
+
+`state.ts` also uses `PHOTO_MESSAGE` from `src/shared/channels.ts`: "Taking a photo", the words the background sends with `thinking` while the glasses take a photo. `takeShot` in `coach.ts` sends the same constant, so the two sides cannot disagree about the wording.
 
 `App.tsx` uses it like this:
 
@@ -47,8 +51,8 @@ Do not add anything else. In particular: no step counter, no lesson list, no tra
 import {isBusy, useTinker} from "./state"
 
 export function App(): JSX.Element {
-  const state = useTinker()     // redrawn on every event from the background
-  const busy = isBusy(state)    // true while a photo, a Claude request or speech is in progress
+  const {state, unreachable} = useTinker()   // redrawn on every event from the background
+  const busy = isBusy(state)                 // true while a photo, a Claude request or speech is in progress
   // ... pass `state` and `busy` down to <Library>, <Session> and <Teaching>
 }
 ```
@@ -57,7 +61,8 @@ What `useTinker` does:
 
 1. It listens with `mentra.on` to the ten event channels: `snapshot`, `teachingState`, `photoCapture`, `tutorialGenerated`, `tutorialList`, `learningState`, `stepVerdict`, `transcriptionUpdate`, `assistantState`, `connectionStatus`. Each event goes through `applyEvent`.
 2. In `mentra.onOpen` it asks for everything once: `mentra.request("getSnapshot", {}, {timeout: SNAPSHOT_TIMEOUT_MS})`. The background also pushes a `snapshot` when the screen opens. Asking covers a push that was sent before this page listened.
-3. It asks again every `SNAPSHOT_RETRY_MS` (2 seconds) in two cases: no snapshot has arrived yet, or the last snapshot said `busy` and no event has since said the app is at rest.
+3. It asks again every `SNAPSHOT_RETRY_MS` (2 seconds) in two cases: no snapshot has arrived yet, or `isBusy(state)` is true, whether a snapshot or an event said so. The buttons are locked while busy, and if the event that ends a command is lost, only a fresh snapshot can unlock them.
+4. When every request has failed for `UNREACHABLE_MS` (10 seconds) while it needed one, `unreachable` is true. The screen then says "Close Tinker and open it again." on the Connecting card, or "Tinker is not answering. Close Tinker and open it again." when it is loaded but busy.
 
 Because `applyEvent` is a plain function, it can be tested without a browser:
 
@@ -79,11 +84,11 @@ isBusy(thinking) // true
 | `teaching` | `snapshot`, `teachingState` | Status, clock, counts, narration, error |
 | `draft` | `snapshot`, `tutorialGenerated` | The lesson waiting for review. Cleared when the teaching status goes back to `idle` or `recording`. |
 | `buildError` | a failed `tutorialGenerated` | Stays while the recording is open |
-| `lastPhoto` | `photoCapture` | The newest photo of the recording. A snapshot carries no photo. |
+| `lastPhoto` | `photoCapture` | The newest photo of the recording. A photo with a lower `frameIndex` than the one shown is ignored. It goes when the recording ends or another `sessionId` starts. A snapshot carries no photo, so a screen opened mid-recording shows "The next photo will show here" until the next photo. |
 | `published` | worked out in `applyEvent` | Set when the draft's id shows up in a `tutorialList`. Used for the note "Lesson published: TITLE" and for moving to the Learning tab. |
 | `lastDraftId` | `tutorialGenerated`, `snapshot` | Only there to notice that moment |
 | `learning` | `snapshot`, `learningState` | The lesson being learned. An ended lesson stays here with `active: false`, for the note "Lesson finished". |
-| `verdict` | `snapshot`, `stepVerdict` | Cleared when a lesson with a new `sessionId` starts. Shown only under the step it belongs to. |
+| `verdict` | `snapshot`, `stepVerdict` | Cleared when a lesson with a new `sessionId` starts, and when an `assistantState` with the message `PHOTO_MESSAGE` arrives during a lesson (a new check has started). Shown under the step it belongs to. A pass moves the lesson on at once, so a pass of the step before shows as the note "Step N passed." with Claude's sentence, and a pass on the last step adds the sentence to "Lesson finished: TITLE." |
 | `transcript` | `snapshot`, `transcriptionUpdate` | A line with a known `id` replaces the old one. At most `TRANSCRIPT_KEEP` (100) lines. |
 | `assistant` | `snapshot`, `assistantState`, `learningState` | `idle`, `listening`, `thinking` or `speaking` |
 | `snapshotBusy` | `snapshot.busy` | Cleared by an `assistantState` of `idle` or `listening` |
@@ -92,24 +97,33 @@ isBusy(thinking) // true
 
 There is no "busy" event. `isBusy` is true when the assistant is `thinking` or `speaking`, or the teaching status is `processing`, or the last snapshot said `busy`. The background promises never to say `idle` or `listening` while a command runs (`Coach.current` in `src/background/coach.ts`).
 
-Buttons that start a command are disabled while busy. Three are never disabled, because the background remembers these commands even while it is busy: **End Session**, **End** (on the in-progress card) and **Discard**.
+Buttons that start a command are disabled while busy. Three are never disabled, because the background remembers these commands even while it is busy: **End Session**, **End** (on the in-progress card) and **Discard**. They go through `endLesson` and `discardTeaching` in `App.tsx`, which also show "Ending after this sentence..." when the tap came while busy, because the background acts only once the glasses have finished their sentence.
 
 ## The files
 
 | File | What it draws | Sends |
 | --- | --- | --- |
-| `src/ui/main.tsx` | Nothing itself. Mounts `<App />` inside `<MentraProvider>`. The provider copies the Mentra App's theme onto `<html class="dark">` and calls `mentra.ready()` once the app has mounted. Do not call `mentra.ready()` by hand. | |
+| `src/ui/main.tsx` | Nothing itself. Mounts `<App />` inside `<MentraProvider>`. The provider copies the Mentra App's theme onto `<html class="dark">` and calls `mentra.ready()` once the app has mounted. Do not call `mentra.ready()` by hand. It also sets `history.scrollRestoration = "manual"`. | |
 | `src/ui/index.html` | The mount point | |
 | `src/ui/state.ts` | Nothing. See above. | `getSnapshot` |
-| `src/ui/App.tsx` | The sticky "TINKER" header, the tagline, the two status pills, the Learning and Teaching tabs, and the view of the tab that is showing | |
-| `src/ui/Learning.tsx` | `Library`: the lesson cards, the in-progress card, the notes, the settings card. `Session`: the current step, "Check my step", Previous, Repeat, Next, the check card with the verdict and both photos, the voice status, the transcript and the question box. | `startLearning`, `deleteTutorial`, `endLearning`, `checkStep`, `navigateStep`, `askTinker` |
-| `src/ui/Teaching.tsx` | One panel per teaching status: idle (checklist, skill box, Start), recording (clock, counts, heard words, buttons, last photo), processing, review (title, description, steps, Discard, Publish) | `startTeaching`, `captureStep`, `stopTeaching`, `discardTeaching`, `publishTutorial` |
-| `src/ui/Settings.tsx` | `SettingsCard` under the library: the key box, "Test glasses audio", a short list of spoken commands. `KeyCard`: the key box alone, at the top of the Teaching tab while no key is saved. | `setKey`, `testAudio` |
-| `src/ui/Parts.tsx` | `usePhotoLink` and `Photo` (a picture that stays hidden until it loads and removes itself when its link is dead), `ErrorLine`, `ConfirmButton` (two taps within 4 seconds), `formatClock` | |
+| `src/ui/App.tsx` | The sticky "TINKER" header, the tagline and the two status pills (both hidden inside a lesson, so "Check my step" stays on the first screen), the Learning and Teaching tabs, and the view of the tab that is showing. It keeps the typed text of the Teaching tab, the "Ending after this sentence..." note, and starts every new view at the top of the page. | `endLearning`, `discardTeaching` |
+| `src/ui/Learning.tsx` | `Library`: the lesson cards, the in-progress card, the notes ("Lesson finished: TITLE.", "Lesson published: TITLE", what is open on the Teaching tab), the settings card. `Session`: "Glasses not connected." when the link is lost, the progress, "Step N passed.", the current step, "Check my step", Previous, Repeat, Next, the check card with the verdict and both photos, the voice status, the transcript and the question box. | `startLearning`, `deleteTutorial`, `checkStep`, `navigateStep`, `askTinker` |
+| `src/ui/Teaching.tsx` | One panel per teaching status: idle (checklist, skill box, Start), recording (clock, counts, heard words, buttons, last photo), processing, review (title, description, steps, Discard, Publish) | `startTeaching`, `captureStep`, `stopTeaching`, `publishTutorial` |
+| `src/ui/Settings.tsx` | `SettingsCard` under the library: the key box, "Test glasses audio", a short list of spoken commands. `KeyCard`: the key box alone, at the top of the Teaching tab while no key is saved. A save waits at most `KEY_TIMEOUT_MS` (30 seconds), then says "No answer from Tinker. Try again." "Remove key" asks twice. | `setKey`, `testAudio` |
+| `src/ui/Parts.tsx` | `usePhotoLink` and `Photo` (a picture that stays hidden until it loads and removes itself when its link is dead), `ErrorLine` and `Explained` (known failures in plain words first, see below), `ConfirmButton` (two taps within 4 seconds), `formatClock`, `stepCount` ("1 Step", "6 Steps") | |
 | `src/ui/Icons.tsx` | Inline SVG icons that take the colour of the text around them | |
 | `src/ui/styles.css` | Every colour and size | |
 
 Two channels are declared and answered by the background but not used by any screen file today: `requestTutorials` and `ping` (with its answer `pong`).
+
+**Known failures in plain words.** The background reports Claude's own error text, for example "Overloaded" or "invalid x-api-key". `PLAIN_WORDS` in `Parts.tsx` matches that text and shows a plain sentence first, with the background's words after it in smaller type: "Claude is busy right now. Try again in a moment." (529 or "overloaded"), "Claude rejected the key." (401, "invalid x-api-key" or "authentication"), "No internet connection to Claude." ("no connection"). Red error lines and the notes in the transcript use it.
+
+**Known gaps** (from the screen review, not fixed):
+
+- A screen reopened in the middle of a recording shows no photo until the next one, because a snapshot carries no photo links.
+- A screen opened after a lesson ended shows no "Lesson finished" note.
+- Saying "publish lesson" publishes Claude's title and description, not edits typed on the phone. Only the "Publish to Library" button sends the edits.
+- On a 375 x 667 screen, "Check my step" is below the fold.
 
 ## Tabs, views and the back gesture
 
@@ -169,16 +183,20 @@ The command table in `docs/HOW_IT_WORKS.md` lists every channel. To put, say, a 
 
 Nothing else. Do not change any state in the click handler. The glasses will speak, and the events will redraw the screen.
 
-For something that cannot be undone, use `ConfirmButton` from `Parts.tsx`:
+For something that cannot be undone, use `ConfirmButton` from `Parts.tsx`. The Delete button on a lesson card in `Learning.tsx`:
 
 ```tsx
 <ConfirmButton
-  label="Discard"
-  confirmLabel="Sure? Tap again"
-  className="btn btn-secondary"
-  onConfirm={() => mentra.send("discardTeaching", {})}
+  label="Delete"
+  confirmLabel="Sure?"
+  className="btn btn-secondary btn-small"
+  disabled={!canDelete}
+  icon={<TrashIcon size={14} />}
+  onConfirm={() => mentra.send("deleteTutorial", {tutorialId: tutorial.id})}
 />
 ```
+
+A button for `endLearning` or `discardTeaching` should call `onEnd` or `onDiscard`, which `App.tsx` passes down, so the "Ending after this sentence..." note works.
 
 ### A new command
 
@@ -211,7 +229,7 @@ Example: show the name of the skill while recording.
 2. **`src/background/coach.ts`**: fill it in `teachingState()`. `snapshot()` uses the same method, so a reopened screen gets it too.
 3. **`src/ui/state.ts`**: add it to `EMPTY.teaching`. For a field that is not optional, TypeScript reports an error here until you do.
 4. **`src/ui/Teaching.tsx`**: draw it from `state.teaching`.
-5. **Tests**: the test files are not type-checked, so update their fixtures by hand (`TEACH_IDLE` in `test/ui.test.tsx`).
+5. **Tests**: the test files are not type-checked, so update their fixtures by hand (`TEACH_IDLE` and `snapshot` in `test/ui-dom.tsx`).
 
 The same steps work for `LearningState` (`learningState()` in the Coach), `ConnectionStatus` (`connection()`), and for a lesson field in `TutorialModel` or `TutorialStepModel`. Careful with the last two: saved lessons on phones do not have a new field, so make it optional and cope with it being absent.
 
@@ -239,7 +257,7 @@ Use a request only when the screen needs an answer to show right away. For every
 ## Testing a screen change
 
 ```bash
-bun test test/ui.test.tsx
+bun test test/ui.test.tsx test/ui-render.test.tsx test/ui-coach.test.ts
 ```
 
-The test renders the real `<App />` with a fake `mentra` object (`FakeMentra` in the test file). A test pushes events with `emit("learningState", {...})`, taps with `click(button("Check my step"))`, and reads what was sent with `fake.sentOn("checkStep")`. `docs/TESTING.md` says what these tests prove and what they cannot.
+The first two render the real `<App />` with a fake `mentra` object (`FakeMentra` in `test/ui-dom.tsx`). A test pushes events with `emit("learningState", {...})`, taps with `click(button("Check my step"))`, and reads what was sent with `fake.sentOn("checkStep")`. `test/ui-coach.test.ts` feeds the screen's data from the real Coach (`test/ui-rig.ts`) and checks that it always equals a freshly opened screen. A new file that needs the fake browser must call `startDom()` and `stopDom()` from `test/ui-dom.tsx`: happy-dom's window is the global object, and all test files run in one process. `docs/TESTING.md` says what these tests prove and what they cannot.

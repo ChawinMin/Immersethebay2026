@@ -13,7 +13,8 @@
  *   `applyEvent` is a plain function: old state + one event = new state.
  *   `useTinker` is the React hook that listens to every event from
  *   src/shared/channels.ts, feeds it to `applyEvent`, and asks for a full
- *   `Snapshot` when the screen opens.
+ *   `Snapshot` when the screen opens. While the screen has no snapshot yet,
+ *   or while the background is busy, it asks again every two seconds.
  *
  * TO SHOW A NEW EVENT ON THE SCREEN
  *   1. add it to `ScreenEvent` and to `applyEvent`
@@ -21,7 +22,7 @@
  *   3. draw the new field in a component
  */
 
-import {useEffect, useReducer, useState} from "react"
+import {useCallback, useEffect, useReducer, useRef, useState} from "react"
 import type {
   AssistantState,
   Channels,
@@ -33,6 +34,7 @@ import type {
   TranscriptEntry,
   TutorialModel,
 } from "../shared/channels"
+import {PHOTO_MESSAGE} from "../shared/channels"
 
 /** The screen keeps at most this many conversation lines. The background keeps 40 for snapshots. */
 const TRANSCRIPT_KEEP = 100
@@ -40,6 +42,8 @@ const TRANSCRIPT_KEEP = 100
 const SNAPSHOT_RETRY_MS = 2000
 /** Give up on one snapshot request after this long, so unanswered requests do not pile up. */
 const SNAPSHOT_TIMEOUT_MS = 5000
+/** When every snapshot request has failed for this long, the screen tells the person to reopen Tinker. */
+const UNREACHABLE_MS = 10000
 
 export interface ScreenState {
   /** False until the first snapshot has arrived. The screen shows "Connecting..." until then. */
@@ -113,8 +117,10 @@ export function applyEvent(state: ScreenState, event: ScreenEvent): ScreenState 
         draft: snap.draft,
         lastDraftId: snap.draft ? snap.draft.id : state.lastDraftId,
         buildError: snap.teaching.status === "recording" ? state.buildError : "",
-        // A snapshot carries no photo, so the photo this page already shows stays while a recording is open.
-        lastPhoto: snap.teaching.status === "idle" ? null : state.lastPhoto,
+        // A snapshot carries no photo, so the photo this page already shows stays while
+        // the same recording is open. A different recording id means that photo is not of it.
+        lastPhoto:
+          snap.teaching.status === "idle" || snap.teaching.sessionId !== state.teaching.sessionId ? null : state.lastPhoto,
         published: stillListed && snap.teaching.status === "idle" ? state.published : null,
         // "No lesson" in a snapshot does not erase a lesson this page saw end: the "finished" note stays.
         learning: snap.learning ?? (state.learning && !state.learning.active ? state.learning : null),
@@ -128,6 +134,8 @@ export function applyEvent(state: ScreenState, event: ScreenEvent): ScreenState 
     case "teachingState": {
       const teaching = event.payload
       const newRecording = teaching.status === "recording" && state.teaching.status === "idle"
+      // The photo on screen belongs to one recording. It goes when that recording ends or another one starts.
+      const otherRecording = teaching.sessionId !== state.teaching.sessionId
       return {
         ...state,
         teaching,
@@ -135,13 +143,17 @@ export function applyEvent(state: ScreenState, event: ScreenEvent): ScreenState 
         draft: teaching.status === "idle" || teaching.status === "recording" ? null : state.draft,
         // A build error belongs to a recording that is still open. A new try or a discard clears it.
         buildError: teaching.status === "recording" && !newRecording ? state.buildError : "",
-        lastPhoto: teaching.status === "idle" || newRecording ? null : state.lastPhoto,
+        lastPhoto: teaching.status === "idle" || newRecording || otherRecording ? null : state.lastPhoto,
         published: teaching.status === "idle" ? state.published : null,
       }
     }
 
-    case "photoCapture":
-      return {...state, lastPhoto: event.payload}
+    case "photoCapture": {
+      const photo = event.payload
+      // Photos are numbered in the order they were taken. One that arrives after a newer one is old news.
+      if (state.lastPhoto && photo.frameIndex < state.lastPhoto.frameIndex) return state
+      return {...state, lastPhoto: photo}
+    }
 
     case "tutorialGenerated": {
       const {status, tutorial, error} = event.payload
@@ -198,7 +210,16 @@ export function applyEvent(state: ScreenState, event: ScreenEvent): ScreenState 
     case "assistantState": {
       const assistant = event.payload.state
       const atRest = assistant === "idle" || assistant === "listening"
-      return {...state, assistant, snapshotBusy: atRest ? false : state.snapshotBusy}
+      // A new check has started (its first move is the photo). The last verdict is now old: if
+      // this check fails, the screen must not keep showing the result of the one before.
+      // The background forgets its own copy at the same moment, so a reopened screen agrees.
+      const checkStarted = event.payload.message === PHOTO_MESSAGE && state.learning?.active === true
+      return {
+        ...state,
+        assistant,
+        snapshotBusy: atRest ? false : state.snapshotBusy,
+        verdict: checkStarted ? null : state.verdict,
+      }
     }
 
     case "connectionStatus":
@@ -221,11 +242,43 @@ export function isBusy(state: ScreenState): boolean {
   )
 }
 
+/** What `useTinker` gives the screen. */
+export interface Tinker {
+  state: ScreenState
+  /**
+   * True when every snapshot request has failed for about ten seconds while
+   * the screen needed one (no snapshot yet, or the background is busy).
+   * The screen then tells the person to close Tinker and open it again.
+   */
+  unreachable: boolean
+}
+
 /** Listens to the background for as long as the screen is open and returns the latest state. */
-export function useTinker(): ScreenState {
+export function useTinker(): Tinker {
   const [state, dispatch] = useReducer(applyEvent, EMPTY)
   // True once the link to the background is ready for requests.
   const [open, setOpen] = useState(false)
+  const [unreachable, setUnreachable] = useState(false)
+  // When the first request of the current run of failures was sent. 0 when the last answer arrived.
+  const failingSince = useRef(0)
+
+  // Ask the background for everything. A failed request is only counted: the pushed
+  // snapshot or the next try covers it. Requests overlap (one every 2 s, each may wait 5 s),
+  // so a failure is timed from when its request was SENT.
+  const requestSnapshot = useCallback(() => {
+    const sentAt = Date.now()
+    mentra.request("getSnapshot", {}, {timeout: SNAPSHOT_TIMEOUT_MS}).then(
+      (payload) => {
+        failingSince.current = 0
+        setUnreachable(false)
+        dispatch({channel: "snapshot", payload})
+      },
+      () => {
+        if (!failingSince.current) failingSince.current = sentAt
+        if (Date.now() - failingSince.current >= UNREACHABLE_MS) setUnreachable(true)
+      },
+    )
+  }, [])
 
   useEffect(() => {
     const stops = [
@@ -243,31 +296,31 @@ export function useTinker(): ScreenState {
       // snapshot at that moment. Asking here covers a push that was sent before this page listened.
       mentra.onOpen(() => {
         setOpen(true)
-        requestSnapshot(dispatch)
+        requestSnapshot()
       }),
     ]
     return () => stops.forEach((stop) => stop())
-  }, [])
+  }, [requestSnapshot])
 
   // Ask again every two seconds in two cases:
   //   - no snapshot has arrived yet, so the screen would say "Connecting..." for ever
-  //   - the last snapshot said "busy". Only a snapshot carries that flag. If the command
-  //     that was running ends without an "assistantState" event after it, a fresh
-  //     snapshot is the only thing that can unlock the buttons again.
-  const needsSnapshot = !state.loaded || state.snapshotBusy
+  //   - the screen thinks the background is busy, whether a snapshot or an event said so.
+  //     The buttons are locked while it is busy. If the event that ends the command is
+  //     lost (the background restarted, or the phone paused this page while it was sent),
+  //     a fresh snapshot is the only thing that can unlock them again.
+  const needsSnapshot = !state.loaded || isBusy(state)
   useEffect(() => {
     if (!open || !needsSnapshot) return
-    const timer = setInterval(() => requestSnapshot(dispatch), SNAPSHOT_RETRY_MS)
+    const timer = setInterval(requestSnapshot, SNAPSHOT_RETRY_MS)
     return () => clearInterval(timer)
-  }, [open, needsSnapshot])
+  }, [open, needsSnapshot, requestSnapshot])
 
-  return state
-}
+  // Nothing is being asked any more, so nothing is failing.
+  useEffect(() => {
+    if (needsSnapshot) return
+    failingSince.current = 0
+    setUnreachable(false)
+  }, [needsSnapshot])
 
-/** Ask the background for everything. A failed request is ignored: the pushed snapshot or the next try covers it. */
-function requestSnapshot(dispatch: (event: ScreenEvent) => void): void {
-  mentra.request("getSnapshot", {}, {timeout: SNAPSHOT_TIMEOUT_MS}).then(
-    (payload) => dispatch({channel: "snapshot", payload}),
-    () => {},
-  )
+  return {state, unreachable}
 }

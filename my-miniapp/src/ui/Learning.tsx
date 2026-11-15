@@ -16,22 +16,47 @@ import {useEffect, useRef, useState} from "react"
 import type {FormEvent, JSX} from "react"
 import type {AssistantState, LearningState, StepVerdict, TranscriptEntry, TutorialModel, TutorialStepModel} from "../shared/channels"
 import {ArrowLeftIcon, ArrowRightIcon, CameraIcon, PlayIcon, RotateCcwIcon, SendIcon, TrashIcon, Volume2Icon} from "./Icons"
-import {ConfirmButton, Photo, usePhotoLink} from "./Parts"
+import {ConfirmButton, Explained, Photo, usePhotoLink} from "./Parts"
 import {SettingsCard} from "./Settings"
 import type {ScreenState} from "./state"
+
+/** Shown after "End" was tapped while the glasses were talking: the background ends the lesson once the sentence is over. */
+const ENDING_NOTE = "Ending after this sentence..."
+
+/**
+ * What the person sees on the Teaching tab, said in the library, because the
+ * background refuses to start a lesson while any of it is open.
+ */
+const TEACHING_NOTE: Record<"recording" | "processing" | "review", string> = {
+  recording: "A recording is open on the Teaching tab. Finish or discard it before you start a lesson.",
+  processing: "Claude is writing a lesson on the Teaching tab. You can start a lesson when it is ready.",
+  review: "A draft lesson is waiting for review on the Teaching tab. Publish or discard it before you start a lesson.",
+}
 
 // ---------------------------------------------------------------- library
 
 /**
  * The list of lessons, with the settings card under it.
  * `onResume` opens the session view again after the person went back from it.
+ * `onEnd` sends `endLearning`. `ending` is true after End was tapped while the
+ * glasses were talking, until the background confirms.
  */
-export function Library({state, busy, onResume}: {state: ScreenState; busy: boolean; onResume: () => void}): JSX.Element {
-  const {tutorials, learning, teaching, connection, published} = state
+export function Library({state, busy, onResume, ending, onEnd}: {
+  state: ScreenState
+  busy: boolean
+  onResume: () => void
+  ending: boolean
+  onEnd: () => void
+}): JSX.Element {
+  const {tutorials, learning, teaching, connection, published, verdict} = state
   const lessonActive = learning?.active === true
   const titleOf = (id: string) => tutorials.find((t) => t.id === id)?.title ?? ""
   // The background refuses to start a lesson while another one, or a recording, is open.
   const canStart = !busy && !lessonActive && teaching.status === "idle"
+  // A lesson that ended on a passed check of its last step: the praise is part of the ending.
+  // (The background sends the verdict, then the end of the lesson at the same step number.)
+  const finalPraise =
+    learning && !learning.active && verdict?.result === "pass" && verdict.step === learning.currentStep ? ` ${verdict.say}` : ""
 
   return (
     <div>
@@ -40,15 +65,17 @@ export function Library({state, busy, onResume}: {state: ScreenState; busy: bool
         <span className="catalog-count">{tutorials.length} Available</span>
       </div>
 
-      {learning && lessonActive && <InProgressCard learning={learning} title={titleOf(learning.tutorialId)} onResume={onResume} />}
+      {learning && lessonActive && (
+        <InProgressCard learning={learning} title={titleOf(learning.tutorialId)} onResume={onResume} ending={ending} onEnd={onEnd} />
+      )}
 
       {learning && !learning.active && learning.finished && (
-        <p className="note-line">Lesson finished{titleOf(learning.tutorialId) ? `: ${titleOf(learning.tutorialId)}` : "."}</p>
+        <p className="note-line">
+          Lesson finished{titleOf(learning.tutorialId) ? `: ${titleOf(learning.tutorialId)}` : ""}.{finalPraise}
+        </p>
       )}
       {published && <p className="note-line">Lesson published: {published.title}</p>}
-      {teaching.status !== "idle" && (
-        <p className="note-line">A recording is open on the Teaching tab. Finish or discard it before you start a lesson.</p>
-      )}
+      {teaching.status !== "idle" && <p className="note-line">{TEACHING_NOTE[teaching.status]}</p>}
       {!connection.claudeReady && (
         <p className="note-line">Photo checks and recording need the Claude key. Add it under Settings below.</p>
       )}
@@ -86,7 +113,7 @@ function LessonCard({tutorial, canStart, canDelete}: {tutorial: TutorialModel; c
       <div>
         <div className="tutorial-meta">
           <span>
-            <strong>{tutorial.steps.length}</strong> Steps
+            <strong>{tutorial.steps.length}</strong> {tutorial.steps.length === 1 ? "Step" : "Steps"}
           </span>
           {/* No made-up duration: the line is left out when the lesson has none. */}
           {tutorial.estimated_duration_minutes > 0 && (
@@ -125,7 +152,13 @@ function LessonCard({tutorial, canStart, canDelete}: {tutorial: TutorialModel; c
  * This happens when the person swiped back out of the session view: the back
  * gesture changes what the phone shows, it does not stop the lesson.
  */
-function InProgressCard({learning, title, onResume}: {learning: LearningState; title: string; onResume: () => void}): JSX.Element {
+function InProgressCard({learning, title, onResume, ending, onEnd}: {
+  learning: LearningState
+  title: string
+  onResume: () => void
+  ending: boolean
+  onEnd: () => void
+}): JSX.Element {
   return (
     <div className="card in-progress-card">
       <span className="tutorial-tag">Lesson in progress</span>
@@ -133,13 +166,14 @@ function InProgressCard({learning, title, onResume}: {learning: LearningState; t
       <p className="tutorial-desc">
         Step {learning.currentStep} of {learning.totalSteps}. The glasses are still coaching.
       </p>
+      {ending && <p className="note-line">{ENDING_NOTE}</p>}
       <div className="button-row">
         <button type="button" className="btn btn-primary" onClick={onResume}>
           <PlayIcon size={16} />
           <span>Resume</span>
         </button>
         {/* Ending a lesson is always allowed, also while the app is busy. */}
-        <button type="button" className="btn btn-secondary" onClick={() => mentra.send("endLearning", {})}>
+        <button type="button" className="btn btn-secondary" onClick={onEnd}>
           End
         </button>
       </div>
@@ -149,8 +183,18 @@ function InProgressCard({learning, title, onResume}: {learning: LearningState; t
 
 // ---------------------------------------------------------------- session
 
-/** A lesson in progress: the current step, the photo check, the voice status and the conversation. */
-export function Session({state, learning, busy}: {state: ScreenState; learning: LearningState; busy: boolean}): JSX.Element {
+/**
+ * A lesson in progress: the current step, the photo check, the voice status and the conversation.
+ * `onEnd` sends `endLearning`. `ending` is true after End Session was tapped
+ * while the glasses were talking, until the background confirms.
+ */
+export function Session({state, learning, busy, ending, onEnd}: {
+  state: ScreenState
+  learning: LearningState
+  busy: boolean
+  ending: boolean
+  onEnd: () => void
+}): JSX.Element {
   const tutorial = state.tutorials.find((t) => t.id === learning.tutorialId)
   const total = learning.totalSteps
   // The bar shows the position in the lesson. A lesson with no steps gives an empty bar, not a division by zero.
@@ -158,6 +202,10 @@ export function Session({state, learning, busy}: {state: ScreenState; learning: 
   const stepsLeft = Math.max(0, total - learning.currentStep)
   // A verdict belongs to one step. An old verdict must not sit under a new step.
   const verdict = state.verdict && state.verdict.step === learning.currentStep ? state.verdict : null
+  // A passed check moves the lesson on at once, so its verdict belongs to the step before
+  // this one. Without this note a pass would never be seen: only failures would leave a trace.
+  const passed =
+    state.verdict && state.verdict.result === "pass" && state.verdict.step === learning.currentStep - 1 ? state.verdict : null
   const keyReady = state.connection.claudeReady
 
   return (
@@ -165,10 +213,13 @@ export function Session({state, learning, busy}: {state: ScreenState; learning: 
       <div className="session-header">
         <h2 className="session-title">{tutorial?.title ?? "Lesson"}</h2>
         {/* Never disabled: the background remembers "end" even while it is busy. */}
-        <button type="button" className="btn btn-secondary" onClick={() => mentra.send("endLearning", {})}>
+        <button type="button" className="btn btn-secondary" onClick={onEnd}>
           End Session
         </button>
       </div>
+      {ending && <p className="note-line session-note">{ENDING_NOTE}</p>}
+      {/* The status pills are hidden during a lesson to keep "Check my step" on the first screen. A lost link must still show. */}
+      {!state.connection.glassesConnected && <p className="note-line session-note">Glasses not connected.</p>}
 
       <div>
         <div className="progress-labels">
@@ -181,6 +232,12 @@ export function Session({state, learning, busy}: {state: ScreenState; learning: 
           <div className="progress-bar-fill" style={{width: `${position}%`}}></div>
         </div>
       </div>
+
+      {passed && (
+        <p className="note-line session-note pass-note">
+          Step {passed.step} passed. {passed.say}
+        </p>
+      )}
 
       {learning.stepData ? (
         <StepCard step={learning.stepData} />
@@ -367,7 +424,8 @@ function TranscriptCard({transcript, busy}: {transcript: TranscriptEntry[]; busy
         {transcript.map((line) => (
           // An unfinished sentence is drawn lighter until its finished version replaces it.
           <div key={line.id} className={`transcript-item ${line.speaker} ${line.isFinal ? "" : "unfinished"}`}>
-            <div>{line.text}</div>
+            {/* A note from the app ("The check failed. Overloaded") puts a known failure in plain words first. */}
+            <div>{line.speaker === "system" ? <Explained text={line.text} /> : line.text}</div>
             <div className="transcript-meta">{lineLabel(line)}</div>
           </div>
         ))}

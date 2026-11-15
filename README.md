@@ -83,7 +83,7 @@ my-miniapp/                    The Mentra miniapp (Bun + React + TypeScript)
             Settings.tsx       Claude key box, sound test
             state.ts           Turns background messages into what the screen draws
             Parts.tsx, Icons.tsx, styles.css, main.tsx, index.html
-    test/                      153 automated tests in four files, and the team's original matcha lesson file
+    test/                      244 automated tests in six files, their helpers, and the team's original matcha lesson file
     scripts/                   Two programs that test against the real Claude API, and their test pictures
 ```
 
@@ -162,8 +162,8 @@ Photos are requested from the glasses at medium size. Without Wi-Fi on the glass
 Checked on 2026-11-14, on a computer, not on glasses:
 
 - The type-check and Mentra's build pass.
-- 153 automated tests pass. They run whole lessons against fake glasses and a fake Claude, draw the screens in a fake browser, and run the built app against a simulated phone.
-- The real Claude API: `my-miniapp/scripts/real-claude-test.ts` sends the app's own requests to Claude with a real key. It ran three times from a cloud machine, not from a phone. The first run passed 8 of 9 checks: the praise for a correct step was 14 words, over the test's limit of 12, while the verdict was right. The prompt was tightened, and the next two runs passed all 9. Building a lesson took 6 to 7.5 seconds, a photo check 1 to 3 seconds, an answer about 1 second. `my-miniapp/docs/TESTING.md`, section "Real Claude API test", has the details and a second program that runs the whole app against the real Claude API.
+- 244 automated tests pass in six files. They run whole lessons against fake glasses and a fake Claude, draw the screens in a fake browser, and run the built app against a simulated phone.
+- The real Claude API: `my-miniapp/scripts/real-claude-test.ts` sends the app's own requests to Claude with a real key. It ran three times from a cloud machine, not from a phone. The first run passed 8 of 9 checks: the praise for a correct step was 14 words, over the test's limit of 12, while the verdict was right. The prompt was tightened, and the next two runs passed all 9. Building a lesson took 6 to 7.5 seconds, a photo check 1 to 3 seconds, an answer about 1 second. A second program, `my-miniapp/scripts/real-app-test.ts`, runs the whole built app on a simulated phone with the real Claude API (taught by voice, built, published, learned, checked, a question answered). It passed 12 of 12 in 52.6 seconds. `my-miniapp/docs/TESTING.md`, section "Real Claude API test", has the details.
 
 Never run on real glasses:
 

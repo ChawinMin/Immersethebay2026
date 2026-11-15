@@ -16,6 +16,7 @@
  *       snapshot.
  *   Do not call `mentra.ready()` by hand here. The provider calls it at the
  *   right moment: after every `mentra.on` listener in the app is attached.
+ *   This file also tells the browser not to restore scroll offsets (see below).
  */
 
 import {createRoot} from "react-dom/client"
@@ -29,6 +30,12 @@ const root = document.getElementById("root")
 if (!root) {
   throw new Error("Missing #root element in index.html")
 }
+
+// The tabs and the lesson view are history entries (useHistoryState), but they
+// are one page. On a back step the browser would put back the scroll offset of
+// the entry it returns to, which belonged to whatever view showed then.
+// App.tsx starts every view at its top instead.
+history.scrollRestoration = "manual"
 
 createRoot(root).render(
   <MentraProvider>

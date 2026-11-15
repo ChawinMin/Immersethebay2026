@@ -52,7 +52,7 @@ The background is a bare JavaScript engine (`build.ts` names JavaScriptCore and 
 | `src/ui/styles.css` | All colours and sizes, in light and dark. |
 | `miniapp.json` | The manifest: name, package id `com.mentra.tinker`, permissions, hardware needs, entry files. |
 | `build.ts` | Mentra's build script, unchanged from their template. Makes `dist/background/index.js` and `dist/ui/`. |
-| `test/claude.test.ts`, `test/coach.test.ts`, `test/ui.test.tsx`, `test/phone.test.ts` | The four test files. See `docs/TESTING.md`. |
+| `test/claude.test.ts`, `test/coach.test.ts`, `test/ui.test.tsx`, `test/ui-render.test.tsx`, `test/ui-coach.test.ts`, `test/phone.test.ts` | The six test files. `test/ui-dom.tsx` and `test/ui-rig.ts` are their helpers. See `docs/TESTING.md`. |
 | `test/fixtures/tut_matcha_ceremonial_01.json` | The team's original matcha lesson file. A test compares `seed.ts` with it. |
 | `scripts/real-claude-test.ts` | A program that runs `claude.ts` against the real Claude API. See `docs/TESTING.md` and `scripts/README.md`. |
 | `scripts/real-app-test.ts` | A program that runs the built app on a simulated phone, with every Claude request going to the real Claude API. See `docs/TESTING.md`. |
@@ -110,7 +110,7 @@ The spoken phrases are copied from the lists in `commands.ts`. A phrase works on
 | finish | recording | "finish lesson", "finish the lesson", "stop recording", "end lesson", "end the lesson" | long press | `stopTeaching` ("Finish lesson") |
 | discard | recording, review | "cancel lesson", "cancel the lesson", "discard lesson" | none | `discardTeaching` ("Discard", then "Sure? Tap again") |
 | publish | review | "publish lesson", "save lesson", "save the lesson" | short press | `publishTutorial` ("Publish to Library") |
-| check | learning | "check", "check it", "check this", "check my work", "check my step", "im done", "i am done", "done", "finished", "how does this look", "is this right" | short press | `checkStep` ("Check my step") |
+| check | learning | "check", "check it", "check this", "check my work", "check my step", "im done", "i am done", "how does this look", "is this right". Also "done" or "finished" when that is the whole sentence | short press | `checkStep` ("Check my step") |
 | next | learning | "next step", "skip step", "skip this step". Also "next" or "skip" when that is the whole sentence | long press | `navigateStep` with `direction: "next"` ("Next", or "Finish" on the last step) |
 | previous | learning | "previous step", "go back" | none | `navigateStep` with `direction: "previous"` ("Previous") |
 | repeat | learning | "repeat", "repeat that", "say that again", "say it again" | none | `navigateStep` with `direction: "repeat"` ("Repeat") |
@@ -146,22 +146,21 @@ All of this is in `Coach.heard` and `Coach.isEcho` in `coach.ts`, and `parseComm
 
 1. **English only, cloud first.** `LANGUAGE` in `index.ts` is `"en-US"`. `index.ts` passes no `processing` option to `forLanguage` or to `speak`, so the SDK's default `"preferCloud"` applies to both: Mentra's cloud does the speech recognition and the voice. The SDK's comments say the phone uses an on-device model while the cloud is unreachable. That fallback has not been tried.
 2. **Pieces, then a sentence.** The phone first sends half-finished guesses (`isFinal` false), then the finished sentence. Both are shown on the screen as one transcript line with one id. Only the finished sentence can be a command.
-3. **The app does not listen to itself while it talks.** Text that arrives while the app is speaking, or within `QUIET_AFTER_SPEECH_MS` (700 ms) after, is thrown away. The app has to do this itself: in Mentra's source the microphone is not paused while the app speaks, and no echo cancellation was found.
-4. **The echo filter.** Speech-to-text is slow, so the app's own sentence can arrive as text after the quiet gap. A piece of heard text, finished or not, is dropped when all of this is true:
-   - it has between 2 and `ECHO_MAX_WORDS` (120) words,
-   - the app finished saying something less than `ECHO_WINDOW_MS` (10 seconds) ago (the last `ECHO_KEEP` = 5 spoken sentences are remembered),
-   - at least `ECHO_PERCENT` (80) percent of its words appear, in the same order, in that spoken sentence. "one" and "1" count as the same word, up to twenty.
+3. **The app does not listen to itself while it talks.** Text that arrives while the app is speaking, or within `QUIET_AFTER_SPEECH_MS` (700 ms) after, is thrown away. The app has to do this itself: in Mentra's source the microphone is not paused while the app speaks, and no echo cancellation was found. **One exception, while recording:** a finished sentence that arrives in that time is kept as narration, with a "You" line, unless it matches what the app is saying or said (rule 4). The expert keeps explaining while the app says "Step 1 saved.", and those words would otherwise be lost. Such a sentence never runs a command: a command at its end is cut off (`keepWhileTalking`).
+4. **The echo filter.** Speech-to-text is slow, so the app's own sentence can arrive as text after the quiet gap, and the start of a sentence can even arrive while it still plays. A piece of heard text, finished or not, is dropped when it matches one of these: the sentence the app is speaking now, or one of the last `ECHO_KEEP` (5) sentences it finished less than `ECHO_WINDOW_MS` (10 seconds) ago. It matches (`echoOf`) when:
+   - it has 2 to `ECHO_MAX_WORDS` (120) words and at least `ECHO_PERCENT` (80) percent of them appear, in the same order, in that sentence, or
+   - it is one word that the app said in that sentence.
 
-   A dropped piece leaves no transcript line, no narration and no command. One word alone is never an echo, so "check" always works.
-5. **The exception to the echo filter.** The app says "Say publish lesson to save it", and the person answers "Publish lesson." Those words are inside the app's own sentence. So a finished sentence that is exactly one command of the current mode, with nothing in front of it, is let through once `ECHO_REPLY_MS` (2.5 seconds) have passed since the app stopped speaking. An echo would have arrived sooner.
+   "one" and "1" count as the same word, up to twenty. A dropped piece leaves no transcript line, no narration and no command. An unfinished piece is only held back: no line and no "listening" until a later piece holds words the app did not say. When a finished sentence is dropped, a line opened by its first pieces is closed. **A finished one-word command is never an echo**, so "check" always works.
+5. **The second exception to the echo filter.** The app says "Say publish lesson to save it", and the person answers "Publish lesson." Those words are inside the app's own sentence. So a finished sentence that is exactly one command of the current mode, with nothing in front of it, is let through once `ECHO_REPLY_MS` (1.2 seconds) have passed since the app stopped speaking. An echo would have arrived sooner. (The audit simulated echoes 900 ms after the speech. Until the evening of 2026-11-14 this was 2.5 seconds, which also dropped quick answers.)
 6. **A command counts only at the END of a sentence.** `normalize` lower-cases the text, removes apostrophes and turns everything that is not a letter or a digit into a space. Then the sentence must equal a phrase or end with it. "The next step is to whisk" is narration. "Whisk until it foams. Next step." is narration plus the command `capture`. The longest matching phrase wins.
-7. **Short words must be the whole sentence.** "next", "skip", "why", "tip" and "tips" are marked `alone` in `commands.ts`. "check", "done", "finished" and "repeat" are not: a sentence that ends in one of them is that command.
+7. **Short words must be the whole sentence.** "next", "skip", "why", "tip", "tips", "done" and "finished" are marked `alone` in `commands.ts`. "check" and "repeat" are not: a sentence that ends in one of them is that command. "I'm done" and "I am done" are phrases of their own and work at the end of a sentence.
 8. **A question starts with the name.** Only in `learning`, a sentence that starts with "Tinker", "hey Tinker", "ok Tinker" or "okay Tinker" (`WAKE_WORDS`) is a question for Claude. If the rest of the sentence is exactly a command ("Tinker, check my work."), it runs that command instead.
-9. **The name alone.** "Hey Tinker." with nothing after it is answered "Yes?". The next finished sentence within `ASK_FOLLOW_MS` (8 seconds) that has at least two words and is not a command is taken as the question.
+9. **The name alone.** "Hey Tinker." with nothing after it is answered "Yes? Ask your question." (`ASK_REPLY`). The next finished sentence within `ASK_FOLLOW_MS` (8 seconds) that is not a command, has at least two words, and is not made only of the reply's own words ("Yes, yes.") is taken as the question (`isFollowUp`). The reply has several words on purpose: the echo of a one-word "Yes?" once came back as "Yes, yes." and was sent to Claude as the question.
 10. **Everything else said during a lesson does nothing.** It is shown in the transcript and that is all. This is on purpose, see D17 in `docs/DECISIONS.md`.
-11. **While recording, everything is narration.** Every finished sentence is added to `narration`, without the command at its end. Only the last `MAX_NARRATION` (1500) characters are kept. This also happens while a command is running, so no explanation is lost.
+11. **While recording, everything is narration.** Every finished sentence is added to `narration`, without the command at its end. Only the last `MAX_NARRATION` (1500) characters are kept. This also happens while a command is running, and while the app talks (rule 3), so no explanation is lost.
 12. **Nothing the app says can command it.** Every sentence passes through `defuse` before it is spoken. If the sentence would be read as a command in any mode, " Okay." is added at its end. If it starts with the name, "So, " is put in front. The app's fixed sentences are worded so that this never triggers. Lesson text and Claude's replies are not, so they are checked every time. The screen shows the sentence as it was spoken.
-13. **Speech cannot be interrupted.** A "stop" given while the app talks is remembered and runs when the sentence ends.
+13. **Speech cannot be interrupted.** A "stop" given while the app talks is remembered and runs when the sentence ends. A check or a question that finds a stop or a discard waiting ends at once, after whatever it was waiting for: no verdict, no light, no step change, no answer (`stopWaiting`). If "End Session" comes during the photo, Claude is not asked at all. Then the stop runs and says "Lesson stopped."
 
 ## What `say` does
 
@@ -171,7 +170,7 @@ Every spoken sentence goes through `Coach.say`:
 2. A transcript line with speaker `tinker` is added. Its label is "Step N" during a lesson and "Tinker" otherwise.
 3. `assistantState` becomes `speaking`.
 4. `device.speak(text)`, which is `session.speaker.speak(text, {stopOtherAudio: true})`. It resolves when the speech has finished playing. The sound goes to the phone's media output. That is the glasses only when they are the phone's Bluetooth audio device. Otherwise it is the phone's speaker. The Coach stops waiting after `SPEECH_GUARD_MS` (6 seconds) plus `SPEECH_GUARD_PER_CHAR_MS` (110 ms) per character. A speech error becomes a transcript note "Speech failed. ..." and the command carries on.
-5. The quiet gap starts, and the sentence is remembered for the echo filter with the time it ended.
+5. The quiet gap starts, and the sentence is remembered for the echo filter with the time it ended. While it plays it already counts for the echo filter (`saying`), because speech-to-text can deliver its start before it ends.
 
 ## Teaching, step by step
 
@@ -187,7 +186,7 @@ Every spoken sentence goes through `Coach.say`:
 
 5. **Kept copies.** Every photo that works is also copied to the phone's own storage (`device.savePhoto`, which is `session.blob.setFromUrl`) under the name `shot-<recordingId>-<n>`. The copy is not waited for, and a failed copy is ignored.
 
-6. **finish** ("finish lesson"). If there is narration left, or no step has been saved yet, one last step capture is taken without the "Step N saved." sentence. If there is still nothing at all (no words and no photo), the app says "Nothing is recorded yet. Do a step and explain it, then say next step to save it." and stays in `recording`. Otherwise the mode becomes `processing` and the recording clock stops. The app says "Building the lesson." while the Claude request is already running.
+6. **finish** ("finish lesson"). One last step capture is taken, without the "Step N saved." sentence, when there is narration left, or no step has been saved yet, or a timed photo after the last step capture took words (a timed photo shows the work half done, so the last step still needs its "finished" photo). If there is still nothing at all (no words and no photo), the app says "Nothing is recorded yet. Do a step and explain it, then say next step to save it." and stays in `recording`. Otherwise the mode becomes `processing` and the recording clock stops. The app says "Building the lesson." while the Claude request is already running.
 
 7. **Which photos Claude gets.** At most `MAX_PLAN_PHOTOS` (12). Every `"step"` photo comes first. Timed photos fill what is left, spread evenly over the recording. A capture that loses its photo keeps its words (`choosePhotos`).
 
@@ -203,7 +202,7 @@ Every spoken sentence goes through `Coach.say`:
 
 9. **Failure.** The mode goes back to `recording` with every capture kept. The screen gets `tutorialGenerated` with `status: "error"`, and `teachingState.error` is "The lesson was not built. " followed by the reason. The app says "I could not build the lesson. Say finish lesson to try again." Saying it again retries without retaking photos.
 
-10. **publish** ("publish lesson", only in `review`). The stored draft is used. From the screen's message only `title` and `description` are read, when they are not empty, each cut to `MAX_TYPED` (600) characters. A spoken publish uses the draft as it is. The lesson gets `status: "published"`, goes first in the library, and the library is saved. The library holds at most `MAX_LIBRARY` (20) recorded lessons. One more removes the oldest and its kept photos. The screen gets `tutorialList` and `teachingState` (idle). The app says "Lesson published." If the phone could not save, a transcript note says "The lesson works now but was not saved to the phone. ..."
+10. **publish** ("publish lesson", only in `review`). The stored draft is used. From the screen's message only `title` and `description` are read, when they are not empty, each cut to `MAX_TYPED` (600) characters. A spoken publish uses the draft as it is. The lesson gets `status: "published"`, goes first in the library, and the library is saved. The library holds at most `MAX_LIBRARY` (20) recorded lessons. One more removes the oldest and its kept photos. The screen gets `tutorialList` and `teachingState` (idle). The app says "Lesson published." If the phone could not save, the app says "The lesson works now, but it could not be saved on this phone." instead, and a transcript note says "The lesson works now but was not saved to the phone. ..." with the reason. Such a lesson is gone after a restart.
 
 11. **discard** ("cancel lesson"). In `recording`: the captures are dropped and their kept photos deleted, "Recording discarded." In `review`: the draft is dropped and its photos deleted, "Draft discarded."
 
@@ -213,7 +212,7 @@ Every spoken sentence goes through `Coach.say`:
 
    "TITLE. Say check when a step is done. Step 1. INSTRUCTION"
 
-2. **check.** Without a key: "Add the Claude key on the phone screen to use checks." Otherwise `device.takePhoto({sound: true})`. If the photo fails: "I could not take a photo. Say check to try again." Then `brain.checkStep` gets the lesson title, the step, the learner's photo, the expert's photo when there is one, and the sentence that carried the command. The answer is a `Verdict`: `{result, say}`.
+2. **check.** Without a key: "Add the Claude key on the phone screen to use checks." Otherwise the last verdict is cleared (so a screen opened during the check does not show the old one as the answer), then `device.takePhoto({sound: true})`. If the photo fails: "I could not take a photo. Say check to try again." Then `brain.checkStep` gets the lesson title, the step, the learner's photo, the expert's photo when there is one, and the sentence that carried the command. The answer is a `Verdict`: `{result, say}`.
    - The screen gets `stepVerdict` with the result, Claude's sentence and the link to the learner's photo.
    - The light blinks twice: green for `pass`, red for `fix`, orange for `unclear`.
    - `pass`, and there is a next step: the app moves on and says the praise and the next step in one speech call: "SAY Step N. INSTRUCTION".
@@ -221,7 +220,7 @@ Every spoken sentence goes through `Coach.say`:
    - `fix` or `unclear`: the app says Claude's sentence and stays on the step.
    - Claude failed: a transcript note "The check failed. ..." with the reason, and the app says "I could not check that. Say check to try again."
 
-   The learner's photo is not kept on the phone.
+   The learner's photo is not kept on the phone. After every wait in a check (the photo, reading the expert's kept photo, Claude) the Coach looks for a waiting stop or discard, and if there is one the check ends there without a word (voice rule 13).
 
 3. **next.** No photo and no Claude. "Step N. INSTRUCTION". On the last step the lesson ends as finished: "That was the last step. You finished TITLE."
 4. **previous.** One step back, then "Step N. INSTRUCTION". On step 1: "This is the first step. Step 1. INSTRUCTION".
@@ -229,7 +228,7 @@ Every spoken sentence goes through `Coach.say`:
 6. **story** ("why"). The step's `story`. When it has none, its `instruction_detailed`. When that is empty too: "The expert gave no reason for this step."
 7. **tips.** Up to two of the step's tips, or "There are no tips for this step."
 8. **materials** ("what do i need"). "You need A, B and C." with the tools first, then the ingredients, at most 8 items. Or "This lesson lists no materials."
-9. **ask** ("Tinker, ..."). Without a key: "Add the Claude key on the phone screen to ask questions." A typed question is first added to the transcript as a `user` line. A spoken one is there already. `brain.answer` gets the whole lesson, the step number, the question, and the last `RECENT_LINES` (6) finished transcript lines of the learner and of Tinker. The app says the answer. On failure: a transcript note "The question failed. ..." and "I could not answer that. Ask again." A typed question while the app is `idle` is answered "Start a lesson first." In the teaching modes a typed question does nothing.
+9. **ask** ("Tinker, ..."). Without a key: "Add the Claude key on the phone screen to ask questions." A typed question is first added to the transcript as a `user` line. A spoken one is there already. `brain.answer` gets the whole lesson, the step number, the question, and the last `RECENT_LINES` (6) finished transcript lines of the learner and of Tinker. The app says the answer, unless a stop or a discard is waiting (voice rule 13). On failure: a transcript note "The question failed. ..." and "I could not answer that. Ask again." A typed question while the app is `idle` is answered "Start a lesson first." In the teaching modes a typed question does nothing.
 10. **stop.** The screen gets `learningState` with `active: false, finished: false`. "Lesson stopped."
 
 When a lesson ends, either way, the screen gets one last `learningState` with `active: false`, and the mode is `idle` again.
@@ -272,6 +271,7 @@ What `setKey` can answer in `error`:
 - "Claude rejected this key. Copy it again from the Claude Console." (HTTP 401)
 - "The test request failed. " followed by the reason
 - "The phone could not save the key. " followed by the reason
+- "The phone could not remove the key. " followed by the reason. An empty key is deleted on the phone first. If that fails, the app keeps using the saved key, and the screen keeps saying a key is saved.
 
 ### Background to screen
 
@@ -279,14 +279,14 @@ What `setKey` can answer in `error`:
 | --- | --- | --- |
 | `snapshot` | `Snapshot` | Pushed by `index.ts` every time the screen opens. |
 | `connectionStatus` | `{glassesConnected, hasCamera, hasMic, claudeReady, keyHint, message?}` | After start-up, when the glasses connect or disconnect, after a key is saved or removed. `keyHint` is the last 4 characters of the key. `message` is never set. |
-| `tutorialList` | `{tutorials}` | After start-up, publish, delete, `requestTutorials`, and when a lesson that was asked for is missing. Recorded lessons newest first, then the built-in lesson. |
+| `tutorialList` | `{tutorials}` | After start-up, publish, delete, `requestTutorials`, when a lesson that was asked for is missing, and when stored lessons are merged in before a save (see "What is stored on the phone"). Recorded lessons newest first, then the built-in lesson. |
 | `teachingState` | `{status, elapsedSeconds, frameCount, stepCount, narration, sessionId?, error?}` | On every change of the recording, once per second while recording, and with every finished sentence heard while recording. `frameCount` counts captures that have a photo. `stepCount` counts step captures. |
 | `photoCapture` | `{photoUrl, frameIndex, timestampSeconds, kind}` | After every photo taken while teaching. `kind` is `"step"` or `"auto"`. |
 | `tutorialGenerated` | `{status, tutorial?, error?}` | When Claude has written the draft (`"success"`) or failed (`"error"`). |
 | `learningState` | `{active, finished, sessionId, tutorialId, currentStep, totalSteps, stepData, assistantState}` | When a lesson starts, when the step changes, and once with `active: false` when the lesson ends. |
 | `stepVerdict` | `{step, result, say, photoUrl?}` | After every photo check that Claude answered. |
 | `transcriptionUpdate` | `TranscriptEntry` | For every transcript line. An unfinished sentence and its finished version share one `id`. |
-| `assistantState` | `{state, message?}` | When the state changes. `message` is "Taking a photo" or "Thinking". |
+| `assistantState` | `{state, message?}` | When the state changes. `message` is "Taking a photo" (the constant `PHOTO_MESSAGE` in `channels.ts`, which the screen also reads) or "Thinking". |
 | `pong` | `{at, roundtripMs, backgroundVersion}` | Answer to `ping`. `backgroundVersion` is `"tinker-2"`. No screen file listens for it today. |
 
 A `TranscriptEntry` is `{id, speaker, text, isFinal, timestamp, step?}`. `speaker` is `user`, `tinker` or `system`. `timestamp` is a label, not a time: "You", "Tinker", "Step N" or "Note". The Coach keeps the last `TRANSCRIPT_KEEP` (40) lines.
@@ -324,7 +324,7 @@ The screen has no "busy" event. It disables its buttons while `assistantState` i
 For each photo sent to Claude, `Coach.imageFor` picks the first of these that works:
 
 1. Links are allowed and the photo is younger than `LINK_FRESH_MS` (8 minutes): send the **link**. Claude downloads it, and nothing large passes through the phone's JavaScript engine.
-2. The bytes are already in memory from earlier in this session: send the **bytes** as base64.
+2. The bytes are already in memory from earlier in this session: send the **bytes** as base64. Only kept photos are held in memory, at most `MAX_CACHED_PHOTOS` (30). The one used longest ago is dropped first.
 3. The phone kept a copy (`session.blob`): read it and send the bytes.
 4. The photo is younger than `LINK_DEAD_MS` (28 minutes): try to download the link on the phone and send the bytes. If the link is already dead, this costs one failed request.
 5. Otherwise the photo is left out. A check still runs, with the text of the step.
@@ -385,7 +385,7 @@ Every failure is a `BrainError` with a `status`. Nothing in `claude.ts` retries,
 
 The Coach reads the status in two places: 400 makes `withPhotos` retry with bytes, and 401 in `setKey` becomes "Claude rejected this key. ...".
 
-The Coach also puts its own limit on every Claude request: after `CLAUDE_GUARD_MS` (90 seconds) it fails with "Claude did not answer in time."
+The Coach also puts its own limit on every Claude request, so a lost connection cannot leave the app busy forever. A check, an answer or a key test fails after `CLAUDE_GUARD_MS` (30 seconds), a lesson build after `BUILD_GUARD_MS` (90 seconds), with "Claude did not answer in time."
 
 ## What is stored on the phone
 
@@ -397,7 +397,15 @@ The Coach also puts its own limit on every Claude request: after `CLAUDE_GUARD_M
 
 These names and the `TutorialModel` shape are on phones already. Changing them loses the saved key or the saved lessons.
 
-`readLibrary` in `coach.ts` leaves out anything that does not look like a lesson, so a damaged value does not stop the app from starting.
+When the app starts, `readLibrary` in `coach.ts` reads the stored lessons and cleans each one (`cleanLesson`, `cleanStep`), so a damaged value never stops the app or makes it speak "undefined":
+
+- a value that is not JSON counts as an empty library,
+- a lesson with no id, no usable step, an id seen before, or the built-in lesson's id is left out, and at most `MAX_LIBRARY` (20) lessons are kept,
+- a step that is not an object is dropped, the others are numbered again from 1, a missing text becomes "", a missing step id becomes `<lessonId>_<n>`, and `total_steps` is counted again,
+- a missing title becomes "Untitled lesson", the duration is kept between 1 and 120 minutes, every stored lesson counts as published and none as built in,
+- fields the code does not know are kept, so a field added later survives a restart.
+
+If the phone fails to answer when the library is read at start, the app remembers that. Before the next save it reads the library again and adds the stored lessons it did not know, matched by id. If the second read fails too, nothing is written, so the lessons on the phone are not overwritten. The new lesson then works until the app restarts, and the transcript says why.
 
 `session.storage` belongs to one phone, one user and one package id (comment at the top of `node_modules/@mentra/miniapp/src/modules/storage.ts`). A lesson recorded on one phone does not appear on another.
 
@@ -446,11 +454,13 @@ These facts are not in this folder. They were read on 2026-11-14 in Mentra's pub
 | Transcript lines kept for snapshots | `TRANSCRIPT_KEEP` | 40 | `coach.ts` |
 | Echo window | `ECHO_WINDOW_MS` | 10 000 ms | `coach.ts` |
 | Echo match | `ECHO_PERCENT` | 80 percent of the heard words, in order | `coach.ts` |
-| Echo exception for a lone command | `ECHO_REPLY_MS` | 2500 ms | `coach.ts` |
+| Echo exception for a lone command | `ECHO_REPLY_MS` | 1200 ms | `coach.ts` |
 | Spoken sentences remembered for the echo filter | `ECHO_KEEP` | 5 | `coach.ts` |
 | Longest text checked as an echo | `ECHO_MAX_WORDS` | 120 words | `coach.ts` |
 | Speech guard | `SPEECH_GUARD_MS`, `SPEECH_GUARD_PER_CHAR_MS` | 6000 ms plus 110 ms per character | `coach.ts` |
-| Claude guard | `CLAUDE_GUARD_MS` | 90 000 ms | `coach.ts` |
+| Claude guard for a check, an answer, a key test | `CLAUDE_GUARD_MS` | 30 000 ms | `coach.ts` |
+| Claude guard for a lesson build | `BUILD_GUARD_MS` | 90 000 ms | `coach.ts` |
+| Kept photos held in memory as bytes | `MAX_CACHED_PHOTOS` | 30 | `coach.ts` |
 | Question after the bare name | `ASK_FOLLOW_MS` | 8000 ms | `coach.ts` |
 | Conversation lines given to Claude | `RECENT_LINES` | 6 | `coach.ts` |
 | Typed question, title, description, skill hint | `MAX_TYPED` | 600 characters | `coach.ts` |
@@ -459,8 +469,11 @@ These facts are not in this folder. They were read on 2026-11-14 in Mentra's pub
 | Transcript lines kept on the screen | `TRANSCRIPT_KEEP` | 100 | `src/ui/state.ts` |
 | Screen asks again for a snapshot | `SNAPSHOT_RETRY_MS` | 2000 ms | `src/ui/state.ts` |
 | Screen gives up on one snapshot request | `SNAPSHOT_TIMEOUT_MS` | 5000 ms | `src/ui/state.ts` |
+| Screen says "Close Tinker and open it again." after failing requests for | `UNREACHABLE_MS` | 10 000 ms | `src/ui/state.ts` |
+| Screen waits for the answer to a key save | `KEY_TIMEOUT_MS` | 30 000 ms | `src/ui/Settings.tsx` |
+| Key card stays on the Teaching tab after a save | `KEY_SAVED_MS` | 2500 ms | `src/ui/Teaching.tsx` |
 | Second tap on Discard or Delete | none (a literal) | within 4000 ms | `src/ui/Parts.tsx` |
 
 `MAX_VOCABULARY` and `TRANSCRIPT_KEEP` each exist twice, in two files, with different values. That is not a mistake: they limit different things.
 
-One limit is not in this code: the Mentra App's own limit on a background `fetch` (table above, row "Network"). On iPhone a request fails after 60 seconds without data. `claude.ts` does not ask for a streamed answer, so a Claude request that takes longer than 60 seconds fails there, before the Coach's 90 seconds are up. Android has the same 60 seconds without data, so the same is likely there. Nobody has timed a real lesson request from a phone.
+One limit is not in this code: the Mentra App's own limit on a background `fetch` (table above, row "Network"). On iPhone a request fails after 60 seconds without data. `claude.ts` does not ask for a streamed answer, so a lesson build that takes Claude longer than 60 seconds fails there, before the Coach's 90 seconds (`BUILD_GUARD_MS`) are up. Android has the same 60 seconds without data, so the same is likely there. Checks and answers stop earlier anyway, at the Coach's 30 seconds (`CLAUDE_GUARD_MS`). From a cloud machine a 3-picture lesson took Claude 6 to 7.5 seconds (`docs/TESTING.md`). Nobody has timed a real lesson request from a phone.

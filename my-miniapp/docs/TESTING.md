@@ -10,19 +10,23 @@ Run them in this folder (`my-miniapp/`).
 bun install          # once
 bun run typecheck    # TypeScript over src/, including the Mentra SDK's types
 bun run build        # Mentra's build, with its check for code the background engine cannot run
-bun test             # all four test files
+bun test             # all six test files
 ```
 
 The last three are "the three checks". All must pass before a commit.
 
-Result on 2026-11-14: type-check 0 errors, build passes, `bun test` 153 pass in 4 files.
+Result on 2026-11-14: type-check 0 errors, build passes, `bun test` 244 pass in 6 files.
 
 | File | Tests |
 | --- | --- |
 | `test/claude.test.ts` | 77 |
-| `test/coach.test.ts` | 46 |
+| `test/coach.test.ts` | 58 |
 | `test/ui.test.tsx` | 29 |
+| `test/ui-render.test.tsx` | 50 |
+| `test/ui-coach.test.ts` | 29 |
 | `test/phone.test.ts` | 1 |
+
+`test/ui-dom.tsx` (the fake browser and fake Mentra App of the screen tests) and `test/ui-rig.ts` (the real Coach wired to the screen's data) are helpers, not test files. Trap: happy-dom's window is the global object, and `bun test` runs every file in one process, so a new file that needs the fake browser must use `startDom()` and `stopDom()` from `test/ui-dom.tsx` the way the two screen test files do.
 
 One file alone: `bun test test/coach.test.ts`.
 
@@ -51,7 +55,7 @@ Tests the four requests in `src/background/claude.ts` and the built-in lesson in
 
 **It does not prove** that the real Claude API accepts these requests, that the model ids exist, or that the answers are any good. That is the job of the real Claude API test below.
 
-### `test/coach.test.ts` (46 tests)
+### `test/coach.test.ts` (58 tests)
 
 Runs the real `Coach` with a fake `Device` (photos, speech, light, storage, kept photos, messages to the screen) and a fake `Brain` (the four Claude calls). The clock is fake too, so nothing waits for real time. After every input a test waits with `await coach.whenIdle()`.
 
@@ -59,12 +63,12 @@ It covers:
 
 - **Command parsing:** the end-of-sentence rule, the whole-sentence words, the name "Tinker".
 - **The key:** tested before it is saved, a rejected key is not saved, teaching without a key is refused out loud and on the screen.
-- **Teaching:** a full lesson by voice ending in review, publish with an edited title, the typed skill reaching Claude, timed photos (after 20 seconds, silent, never while a command runs or the app speaks), a command given during a timed photo, the choice of at most 12 photos, a failed lesson build keeping the recording, a lesson without steps refused, finish with nothing recorded, a failed photo, discard deleting kept photos, the library limit of 20, narration keeping its last 1500 characters.
-- **Learning:** fix and unclear stay on the step, a pass moves on, a pass on the last step ends the lesson, a failed check, next, previous, repeat, why, tips and materials, a spoken and a typed question, the name alone, no key.
-- **The app's own voice:** speech ignored while it talks, the echo filter and its 10 seconds, an echo that ends in command words, Claude's sentence made harmless ("Okay."), and a last test that runs every sentence the app said in the whole file through `parseCommand` for every mode and expects no command.
-- **Photos:** link refusal falls back to bytes and is remembered, a status 400 that is not about links does not give up on links, old links fall back to the kept copy, then a download, then no photo.
-- **Restart:** the key and the library survive, a damaged library does not stop the start.
-- **The gate and the screen:** teaching and learning never run together, "End Session" while the app speaks, the assistant state while a command runs, no failure leaves the app stuck, `snapshot()` matches the single messages, unfinished sentences reuse one transcript id, speech or a Claude request that never ends.
+- **Teaching:** a full lesson by voice ending in review, publish with an edited title, the typed skill reaching Claude, timed photos (after 20 seconds, silent, never while a command runs or the app speaks), a command given during a timed photo, the choice of at most 12 photos, the last step's photo when a timed photo took its words, a failed lesson build keeping the recording, a lesson without steps refused, finish with nothing recorded, a failed photo, discard deleting kept photos, the library limit of 20, narration keeping its last 1500 characters, words said during the app's "Step N saved." kept in the lesson.
+- **Learning:** fix and unclear stay on the step, a pass moves on, a pass on the last step ends the lesson, a failed check, a new check that clears the old verdict, next, previous, repeat, why, tips and materials, a spoken and a typed question, the name alone and the echo of its reply, no key.
+- **The app's own voice:** speech ignored while it talks, the echo filter and its 10 seconds, one-word echoes, an echo that closes its unfinished line, a quick spoken answer 1.2 seconds after a prompt, an echo that ends in command words, Claude's sentence made harmless ("Okay."), and a last test that runs every sentence the app said in the whole file through `parseCommand` for every mode and expects no command.
+- **Photos:** link refusal falls back to bytes and is remembered, a status 400 that is not about links does not give up on links, old links fall back to the kept copy, then a download, then no photo, at most 30 photos' bytes kept in memory.
+- **Restart and storage:** the key and the library survive, a damaged library does not stop the start, a damaged saved lesson is cleaned, a failed read at start never wipes the saved lessons, removing the key when the phone cannot delete it.
+- **The gate and the screen:** teaching and learning never run together, "End Session" while the app speaks, "End Session" during a check or a question (no verdict, no answer), the assistant state while a command runs, no failure leaves the app stuck, `snapshot()` matches the single messages, unfinished sentences reuse one transcript id, speech or a Claude request that never ends.
 - **The library:** delete, not while being learned, never the built-in lesson.
 - **The glasses button** in every mode, and the small screen messages (ping, library, audio check, connection, help).
 
@@ -72,7 +76,7 @@ It covers:
 
 ### `test/ui.test.tsx` (29 tests)
 
-Renders the real `<App />` inside the real `<MentraProvider>` in a fake browser (happy-dom), with a fake `mentra` object in place of the Mentra App. The fake records every `send` and `request`, and a test pushes events the way the background would.
+Renders the real `<App />` inside the real `<MentraProvider>` in a fake browser (happy-dom), with a fake `mentra` object in place of the Mentra App (both in `test/ui-dom.tsx`). The fake records every `send` and `request`, and a test pushes events the way the background would.
 
 | Group | Tests | What is checked |
 | --- | --- | --- |
@@ -85,6 +89,14 @@ Renders the real `<App />` inside the real `<MentraProvider>` in a fake browser 
 | `applyEvent` | 3 | Starts from nothing and is replaced by a snapshot. Processing counts as busy. An empty `tutorialList` empties the library. |
 
 **It does not prove** layout, colours, or the real bridge to the Mentra App. The layout was looked at by eye in a headless browser at 380 px wide during the merge. Those pictures are not in this repository.
+
+### `test/ui-render.test.tsx` (50 tests)
+
+More screen tests in the same fake browser. A review broke the screen code on purpose in 33 small ways, and 25 of the broken versions still passed `test/ui.test.tsx`. These tests catch them, plus one test for each fix made after that review. Groups: the re-request of a snapshot while the screen is busy or has none, a background that does not answer ("Close Tinker and open it again."), the key box (including "No answer from Tinker. Try again." after 30 seconds), photos and dead links, the "Step N passed." note, history and scroll, buttons that respect busy, "Ending after this sentence..." for End and Discard, snapshots and events, plain words for known failures, typed text that survives a tab switch, and `main.tsx`. Timers are bun's fake timers, so a 10 second wait takes no real time.
+
+### `test/ui-coach.test.ts` (29 tests)
+
+The screen's data fed by the REAL Coach through `test/ui-rig.ts`, with no browser. The rule it checks: after any series of events the background really sends, the screen's data equals that of a screen that opens fresh and asks for a snapshot. 9 tests walk whole lessons (a passed check, a pass on the last step, failed checks after a "fix", a screen opened mid-command or mid-recording, End Session while the glasses talk). 20 more are a fuzzer, one per seed, that throws random speech, taps, button presses, clock ticks, slow speech, slow or failing Claude requests, failing photos and screen reopenings at it.
 
 ### `test/phone.test.ts` (1 test, about 6 seconds)
 
@@ -109,7 +121,7 @@ For anyone who needs to extend `test/phone.test.ts` or `scripts/real-app-test.ts
   - the glasses: `streamType: "glasses_connection"`, `data: {connected, modelName}`
 - Messages from the phone screen are events on the stream `_ui`. `data` is `{type: "UI_OPEN"}`, `{type: "UI_CLOSE"}` or `{type: "UI_MESSAGE", channel, payload, seq, requestId?}`.
 - Messages to the screen leave as `{type: "UI_SEND", channel, payload, seq, requestId?}`. The answer to a request (`getSnapshot`, `setKey`) carries the `requestId`, and its payload is wrapped: `{ok: true, result}` or `{ok: false, error}`.
-- Request types the simulated phone answers: `miniapp_storage_get`, `miniapp_storage_set`, `miniapp_storage_delete`, `miniapp_speak` (answer `{completed: true}`), `miniapp_photo` (answer `{requestId, photoUrl, mimeType, size}`), `miniapp_blob_set_from_url`, `miniapp_rgb_led`. Every other request gets `null`. So reading a kept photo back finds nothing, and the app downloads the photo link instead.
+- Request types the simulated phone answers: `miniapp_storage_get`, `miniapp_storage_set`, `miniapp_storage_delete`, `miniapp_speak` (answer `{completed: true}`), `miniapp_photo` (answer `{requestId, photoUrl, mimeType, size}`), `miniapp_blob_set_from_url`, `miniapp_rgb_led`. In `test/phone.test.ts` every other request gets `null`, so reading a kept photo back finds nothing and the app downloads the photo link instead. `scripts/real-app-test.ts` also keeps and returns photo copies.
 - `test/phone.test.ts` waits 900 ms before it "says" something, because the app ignores the microphone for 700 ms after it speaks. `scripts/real-app-test.ts` waits until the app is idle and then 3 more seconds, the way a person waits.
 
 These names were read in `node_modules/@mentra/miniapp/src/protocol.ts`, `node_modules/@mentra/miniapp/src/modules/ui.ts` and the files under `node_modules/@mentra/miniapp/src/transport/`. They belong to SDK 3.4.0 and can change with the SDK version.
@@ -135,7 +147,7 @@ Both read the key from the environment variable `TINKER_CLAUDE_KEY` and never pr
 
 ### `scripts/real-claude-test.ts`: the Claude code alone, 9 checks
 
-**Last result: not yet run**
+**Last result: 2026-11-14, from a cloud machine with the team's real key: 9 of 9 passed on two runs in a row. Lesson build 6 to 7 s, photo checks 1.2 to 2.8 s, answers about 1 s.**
 
 It needs Node 18 or newer. Build one file here, then run it on the machine that has the key. `scripts/README.md` has the full description.
 
@@ -173,9 +185,9 @@ Two lines of the output start with `READ THIS`. A person has to judge them: in c
 
 **Dry run, without a key:** `TINKER_DRY_RUN=1 node build/real-claude-test.mjs`. A fake inside the program answers every request. This shows that the program works and says nothing about the real API. `TINKER_DRY_FAULT=check5` and `TINKER_DRY_FAULT=link400` make the fake misbehave on purpose, to show that a failure and a NOTE are reported.
 
-### `scripts/real-app-test.ts`: the whole app with the real Claude, 10 checks
+### `scripts/real-app-test.ts`: the whole app with the real Claude, 12 checks
 
-**Last result: not yet run**
+**Last result: 2026-11-14, about 19:37, from a cloud machine with the team's real key: 12 of 12 passed in 52.6 s. The made-up photo links got HTTP 400, so the app sent the photos again as bytes, and the lesson build took 5.3 s. Checks took 1.1 to 1.5 s. The answer took 0.9 s and ended in "Okay." from the guard (`defuse`), because Claude's answer ended in "next step".**
 
 It builds the app with `bun run build`, loads `dist/background/index.js` into the same kind of sandbox as `test/phone.test.ts`, and plays the phone, the glasses and the person: it answers the SDK's requests, "speaks" sentences into the microphone, taps the phone screen and puts a drawing in front of the camera before each photo. Every request to Claude is real.
 
@@ -183,7 +195,7 @@ What the run does, in order: the key is saved on the screen (one real test reque
 
 | # | Check | PASS when |
 | --- | --- | --- |
-| 1 | The app accepts the key after a real test request | `setKey` answers `ok` |
+| 1 | The app refuses a wrong key and accepts the right one | Each after a real test request |
 | 2 | Claude builds a lesson from the recording | 2 to 4 steps, each with a spoken instruction and a "done looks like" line |
 | 3 | Published by voice and saved on the phone | The glasses say "Lesson published." and one lesson is stored |
 | 4 | The lesson starts by voice | The recorded lesson is active |
@@ -193,6 +205,8 @@ What the run does, in order: the key is saved on the screen (one real test reque
 | 8 | A spoken question is answered by Claude | The answer mentions 80, 175 or "eighty" |
 | 9 | The lesson stops by voice | `learningState` says `active: false` |
 | 10 | No error escaped inside the app | The app wrote nothing with `console.error` (that is where `safely` reports) |
+| 11 | Every photo check sent Claude the right photos | The expert's photo of that step and the learner's photo |
+| 12 | The app acted on every sentence and tap the first time | Nothing had to be said or tapped twice |
 
 **Photo links:** the simulated glasses hand out links on `photos.example`, a name that exists nowhere. Claude cannot open them, so the first request with photos is refused with HTTP 400 and the app sends the photo bytes instead (`withPhotos` in `coach.ts`). The summary at the end says whether that happened and whether the bytes worked. Real Mentra links were not tried.
 
@@ -202,7 +216,7 @@ read -rs TINKER_CLAUDE_KEY && export TINKER_CLAUDE_KEY   # paste the key and pre
 bun scripts/real-app-test.ts
 ```
 
-It sends about 9 requests to Claude. The output ends with every request to Claude (kind, HTTP status, seconds, model, and whether each photo went as a link or as bytes), the list of checks, and one line: `RESULT: ALL CHECKS PASSED` or `RESULT: n CHECK(S) FAILED`. Exit code 0 means all passed, 1 means something failed, 2 means no usable key was given and nothing was sent.
+It sends about 9 requests to Claude. The output ends with every request to Claude (kind, HTTP status, seconds, model, and whether each photo went as a link or as bytes), the list of checks, and one line that starts with `RESULT:` (`RESULT: ALL CHECKS PASSED` when nothing failed). Exit code 0 means all passed, 1 means a check failed or the run stopped early, 2 means no usable key was given and nothing was sent.
 
 **Dry run, without a key:** `TINKER_DRY_RUN=1 bun scripts/real-app-test.ts`. A fake Claude answers, nothing leaves the machine, and the result says nothing about the real API.
 
@@ -234,12 +248,13 @@ Errors appear in three places on the phone: a red line on the Teaching tab, the 
 | "Claude rejected this key. Copy it again from the Claude Console." | Wrong or deleted key | Claude Console |
 | "The test request failed. No connection to Claude. ..." | The phone has no internet | Phone network |
 | "The test request failed. ..." with a message that names `thinking` or the model | Claude refuses the request shape | `thinkingOff` and the model constants in `src/background/claude.ts`. Run the real Claude API test. |
-| Red line "The lesson was not built. ..." and "I could not build the lesson. Say finish lesson to try again." | The text after it is the reason: Claude's own error, "Claude's answer was cut off. Record fewer steps.", "No connection to Claude. ..." (on iPhone a request fails after 60 seconds without data), or "Claude did not answer in time." | `buildLesson` and `PLAN_MAX_TOKENS` in `claude.ts`, `MAX_PLAN_PHOTOS` in `coach.ts` |
-| "I could not check that. Say check to try again." and a note "The check failed. ..." | The note holds the reason | `checkStep` in `claude.ts` |
+| Red line "The lesson was not built. ..." and "I could not build the lesson. Say finish lesson to try again." | The text after it is the reason: Claude's own error, "Claude's answer was cut off. Record fewer steps.", "No connection to Claude. ..." (on iPhone a request fails after 60 seconds without data), or "Claude did not answer in time." (after 90 seconds, `BUILD_GUARD_MS`) | `buildLesson` and `PLAN_MAX_TOKENS` in `claude.ts`, `MAX_PLAN_PHOTOS` in `coach.ts` |
+| "I could not check that. Say check to try again." and a note "The check failed. ..." | The note holds the reason. "Claude did not answer in time." means 30 seconds passed (`CLAUDE_GUARD_MS`). | `checkStep` in `claude.ts` |
+| "The lesson works now, but it could not be saved on this phone." | The phone's storage refused the write, or the library could not be read, so nothing was written over it. The reason is a note in the transcript (the phone shows it inside a lesson). The lesson is gone after a restart. | `saveLibrary` in `coach.ts` |
 | A correct step of the built-in lesson gets "Needs a fix" | The built-in lesson has no expert photos, so the check rests on the written "done looks like" line. Against the real Claude API that was strict (D28 in `docs/DECISIONS.md`). | Record a lesson and learn that one. The lines are in `src/background/seed.ts`. |
 | "I could not answer that. Ask again." and a note "The question failed. ..." | The note holds the reason | `answer` in `claude.ts` |
 | A question gets no reaction | The name was not heard as "Tinker". Read the "You" line on the screen to see what was heard. | `WAKE_WORDS` in `src/background/commands.ts` |
-| A command gets no reaction | It was said while the app was talking or within 700 ms after. Or it came less than 2.5 seconds after a prompt that contains the same words. Or another command was still running. | `QUIET_AFTER_SPEECH_MS`, `ECHO_REPLY_MS` and `run` in `src/background/coach.ts` |
+| A command gets no reaction | It was said while the app was talking or within 700 ms after. Or it came less than 1.2 seconds after a prompt that contains the same words. Or another command was still running. | `QUIET_AFTER_SPEECH_MS`, `ECHO_REPLY_MS` and `run` in `src/background/coach.ts` |
 | The app reacts to its own voice, or "You" lines repeat what the app said | The quiet gap or the echo filter is too weak for the real delay | `QUIET_AFTER_SPEECH_MS`, `ECHO_WINDOW_MS`, `ECHO_PERCENT` in `coach.ts` |
 | A sentence ends in "Okay." or starts with "So," | Expected. The text would otherwise have ended in a command or started with the name. | `defuse` in `coach.ts` |
 | The first request with photos takes twice as long | Claude cannot open Mentra's photo links. The first try fails, then bytes are sent. | Expected. `withPhotos` in `coach.ts` remembers it until the app restarts. |

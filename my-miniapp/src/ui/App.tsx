@@ -15,9 +15,12 @@
  *   the same lesson at the same step, because it asks for a snapshot on open.
  *   Nothing on this screen pretends that something happened.
  *
- *   What the screen does keep: the text typed into a box, and which tab and
- *   view are showing. Tab and view are stored in the browser history, so the
- *   phone's back gesture steps through them before it minimises the app.
+ *   What the screen does keep: the text typed into a box, which tab and view
+ *   are showing, and a note that an End or Discard tap is waiting for the
+ *   glasses to finish a sentence. Tab and view are stored in the browser
+ *   history, so the phone's back gesture steps through them before it
+ *   minimises the app. The text typed on the Teaching tab is kept here, above
+ *   the tabs, so switching tabs does not lose it.
  *
  * FILES
  *   state.ts      turns background events into the data drawn here
@@ -30,12 +33,13 @@
  * types come from src/shared/channels.ts.
  */
 
-import {useEffect, useRef} from "react"
+import {useEffect, useRef, useState} from "react"
 import type {JSX} from "react"
 import {MiniappHeader, useHistoryState, useSafeArea} from "@mentra/miniapp/ui"
 import {GraduationCapIcon, VideoIcon} from "./Icons"
 import {Library, Session} from "./Learning"
 import {Teaching} from "./Teaching"
+import type {ReviewEdits, TeachingForms} from "./Teaching"
 import {isBusy, useTinker} from "./state"
 
 type Tab = "learning" | "teaching"
@@ -46,7 +50,7 @@ export function App(): JSX.Element {
   // The page runs edge to edge, under the status bar and the home indicator.
   // The root is padded by these insets so nothing sits under them.
   const {insets} = useSafeArea()
-  const state = useTinker()
+  const {state, unreachable} = useTinker()
   const busy = isBusy(state)
 
   // useHistoryState instead of useState: every change is a history entry,
@@ -74,12 +78,15 @@ export function App(): JSX.Element {
       setTab("learning")
       setView("session")
     } else if (!lessonKey && lastLessonKey.current) {
-      // The lesson ended. Setting the old value goes back one history entry
-      // instead of adding one, so the next back gesture does not reopen it.
-      setView("library")
+      // The lesson ended. On the Learning tab, setting the old value goes back
+      // one history entry instead of adding one, so the next back gesture does
+      // not reopen it. On the Teaching tab the tab change sits on top of that
+      // entry, so the same call would ADD an entry every time a lesson ends
+      // there. The view is left alone then: an ended lesson shows the library anyway.
+      if (tab === "learning") setView("library")
     }
     lastLessonKey.current = lessonKey
-  }, [lessonKey, setTab, setView])
+  }, [lessonKey, tab, setTab, setView])
 
   // Same idea for teaching: when a recording opens (also by voice, or after
   // the screen was reopened during one), show the Teaching tab.
@@ -95,6 +102,44 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (publishedId) setTab("learning")
   }, [publishedId, setTab])
+
+  // A new body starts at its top. React swaps what is inside the page, and the
+  // page keeps its scroll offset, so without this a lesson started from the
+  // bottom of the library would open with its step above the screen, and the
+  // "Lesson finished" note would be out of sight. main.tsx stops the browser
+  // from putting an old offset back on a back step.
+  const body = !state.loaded ? "connecting" : tab === "teaching" ? `teaching-${teaching.status}` : showSession ? "session" : "library"
+  useEffect(() => {
+    window.scrollTo(0, 0)
+  }, [body])
+
+  // What has been typed on the Teaching tab. Kept here so a tab switch does not lose it.
+  const [skill, setSkill] = useState("")
+  const [edits, setEdits] = useState<ReviewEdits | null>(null)
+  const forms: TeachingForms = {skill, setSkill, edits, setEdits}
+  // The hint went out with the start of the recording. The next recording starts with an empty box.
+  useEffect(() => {
+    if (teaching.status !== "idle") setSkill("")
+  }, [teaching.status])
+
+  // End and Discard always reach the background, but while the glasses talk it
+  // acts once the sentence is over. Until it confirms, the screen says so,
+  // instead of looking as if the tap was ignored.
+  const [ending, setEnding] = useState<"" | "lesson" | "teaching">("")
+  useEffect(() => {
+    if (!ending) return
+    const confirmed = ending === "lesson" ? !lessonActive : teaching.status === "idle"
+    // At rest again without a confirmation: the background had nothing to end.
+    if (confirmed || !busy) setEnding("")
+  }, [ending, lessonActive, teaching.status, busy])
+  const endLesson = () => {
+    mentra.send("endLearning", {})
+    if (busy) setEnding("lesson")
+  }
+  const discardTeaching = () => {
+    mentra.send("discardTeaching", {})
+    if (busy) setEnding("teaching")
+  }
 
   return (
     <div
@@ -123,7 +168,8 @@ export function App(): JSX.Element {
       </div>
 
       <div className="tinker-container">
-        <div className="tinker-header">
+        {/* Hidden inside a lesson: the room goes to the step, so "Check my step" stays on the first screen. */}
+        <div className="tinker-header" hidden={showSession}>
           <p className="brand-tagline">Learn by doing. Teach by showing.</p>
 
           {/* The pills have their own row: both do not fit beside the capsule menu on a phone. */}
@@ -170,17 +216,28 @@ export function App(): JSX.Element {
         </nav>
 
         <main>
+          {/* The buttons are locked while busy, and only a snapshot can unlock them if an event was lost. */}
+          {state.loaded && busy && unreachable && (
+            <p className="note-line">Tinker is not answering. Close Tinker and open it again.</p>
+          )}
           {!state.loaded ? (
             <div className="card connecting-card">
               <h2>Connecting...</h2>
               <p>Waiting for Tinker to answer.</p>
+              {unreachable && <p className="connecting-advice">Close Tinker and open it again.</p>}
             </div>
           ) : tab === "teaching" ? (
-            <Teaching state={state} busy={busy} />
+            <Teaching state={state} busy={busy} forms={forms} ending={ending === "teaching"} onDiscard={discardTeaching} />
           ) : showSession && learning ? (
-            <Session state={state} learning={learning} busy={busy} />
+            <Session state={state} learning={learning} busy={busy} ending={ending === "lesson"} onEnd={endLesson} />
           ) : (
-            <Library state={state} busy={busy} onResume={() => setView("session")} />
+            <Library
+              state={state}
+              busy={busy}
+              onResume={() => setView("session")}
+              ending={ending === "lesson"}
+              onEnd={endLesson}
+            />
           )}
         </main>
       </div>

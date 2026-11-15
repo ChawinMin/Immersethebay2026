@@ -431,7 +431,11 @@ function fold(events: Emitted[]): Snapshot {
       const index = transcript.findIndex((line) => line.id === payload.id)
       if (index >= 0) transcript[index] = payload
       else transcript = [...transcript, payload].slice(-40)
-    } else if (channel === "assistantState") assistant = payload.state
+    } else if (channel === "assistantState") {
+      assistant = payload.state
+      // A new check is starting. The screen drops the old verdict when the learner's photo is taken.
+      if (payload.message === "Taking a photo" && learning) lastVerdict = null
+    }
   }
   return {
     connection,
@@ -496,6 +500,17 @@ test("short words are commands only when they are the whole sentence", () => {
   expect(parseCommand("learning", "tip")?.command).toBe("tips")
   expect(parseCommand("learning", "That is a good tip")).toBeNull()
   expect(parseCommand("learning", "Give me a tip.")?.command).toBe("tips")
+
+  // "done" and "finished" too: in a loud room, talk that ends in them must not take a photo.
+  for (const talk of ["So that is how it is done.", "Tell me when you are finished.", "I am not done.", "We are almost done."]) {
+    expect(parseCommand("learning", talk)).toBeNull()
+  }
+  expect(parseCommand("learning", "Done.")).toEqual({command: "check", before: ""})
+  expect(parseCommand("learning", "Finished!")).toEqual({command: "check", before: ""})
+  // "I'm done", "I am done" and "check" still work at the end of a sentence.
+  expect(parseCommand("learning", "Okay, I think I'm done.")).toEqual({command: "check", before: "Okay, I think"})
+  expect(parseCommand("learning", "Right, I am done")).toEqual({command: "check", before: "Right,"})
+  expect(parseCommand("learning", "Please check")?.command).toBe("check")
 })
 
 test("a question starts with the name Tinker, and only while a lesson is being learned", () => {
@@ -854,23 +869,67 @@ test("Claude gets at most 12 photos: every step photo first, then timed photos s
   expect(fake.last("teachingState")).toMatchObject({frameCount: 40, stepCount: 3})
 
   await tap(rig, "stopTeaching")
-  expect(fake.photos).toBe(40) // nothing was left to save, so no extra photo
+  // A timed photo after the last step holds words, so that step was explained
+  // after its photo: "finish" takes one more step photo, as the "finished" picture.
+  expect(fake.photos).toBe(41)
+  expect(fake.photoCalls.at(-1)).toEqual({sound: true})
   const captures: CaptureInput[] = mind.of("buildLesson")[0]!.input.captures
-  expect(captures).toHaveLength(40)
-  expect(captures.map((capture) => capture.kind)).toEqual([...Array(3).fill("step"), ...Array(37).fill("auto")])
+  expect(captures).toHaveLength(41)
+  expect(captures.map((capture) => capture.kind)).toEqual([...Array(3).fill("step"), ...Array(37).fill("auto"), "step"])
   const withPhoto = captures.flatMap((capture, i) => (capture.image ? [i] : []))
   expect(withPhoto).toHaveLength(12)
-  expect(withPhoto.slice(0, 3)).toEqual([0, 1, 2]) // every step photo
-  expect(withPhoto[3]).toBe(3) // the first timed photo
-  expect(withPhoto.at(-1)).toBe(39) // and the last one
-  const gaps = withPhoto.slice(4).map((index, i) => index - withPhoto[i + 3]!)
+  expect(withPhoto.filter((i) => captures[i]!.kind === "step")).toEqual([0, 1, 2, 40]) // every step photo
+  const timed = withPhoto.filter((i) => captures[i]!.kind === "auto")
+  expect(timed).toHaveLength(8) // the rest of the 12
+  expect(timed[0]).toBe(3) // the first timed photo
+  expect(timed.at(-1)).toBe(39) // and the last one
+  const gaps = timed.slice(1).map((index, i) => index - timed[i]!)
   expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThanOrEqual(1) // evenly spread
   // A capture that lost its photo keeps its words.
   expect(captures[4]).toEqual({transcript: "A detail about the second knot.", atSeconds: expect.any(Number), kind: "auto", image: null})
 
   // Kept copies that no step of the draft uses are deleted from the phone.
   const id = fake.last("teachingState")!.sessionId
-  expect([...fake.kept.keys()].sort()).toEqual([`shot-${id}-1`, `shot-${id}-2`, `shot-${id}-3`])
+  expect([...fake.kept.keys()].sort()).toEqual([`shot-${id}-1`, `shot-${id}-2`, `shot-${id}-3`, `shot-${id}-41`])
+})
+
+test("the last step gets its finished photo even when a timed photo took its words", async () => {
+  const rig = await start()
+  const {fake, mind, coach} = rig
+  await hear(rig, "Start teaching.")
+  await hear(rig, "First I sift the matcha. Next step.")
+  await hear(rig, "Now I whisk in a zigzag until it foams.")
+  // The expert whisks for 21 seconds without talking: the timer takes a silent photo, with the words.
+  fake.clock.now += 21_000
+  coach.tick()
+  await coach.whenIdle()
+  expect(fake.photoCalls.at(-1)).toEqual({sound: false})
+  expect(fake.last("teachingState")).toMatchObject({narration: "", stepCount: 1})
+
+  const before = fake.photoCalls.length
+  await hear(rig, "Finish lesson.")
+  // One more photo, with the shutter sound: the bowl as it looks when the step is finished.
+  expect(fake.photoCalls.slice(before)).toEqual([{sound: true}])
+  const captures: CaptureInput[] = mind.of("buildLesson")[0]!.input.captures
+  expect(captures.map((capture) => `${capture.kind}: ${capture.transcript}`)).toEqual([
+    "step: First I sift the matcha.",
+    "auto: Now I whisk in a zigzag until it foams.",
+    "step: ",
+  ])
+  expect(captures.at(-1)!.image).toEqual({kind: "url", url: "https://photos.example/p3.jpg"})
+  expect(fake.said.at(-1)).toBe("Lesson ready. Making matcha. It has 2 steps. Say publish lesson to save it, or review it on the phone.")
+
+  // A timed photo without words after the last step needs no extra photo.
+  await tap(rig, "discardTeaching")
+  await hear(rig, "Start teaching.")
+  await hear(rig, "I tie the knot. Next step.")
+  fake.clock.now += 21_000
+  coach.tick()
+  await coach.whenIdle()
+  const photos = fake.photoCalls.length
+  await tap(rig, "stopTeaching")
+  expect(fake.photoCalls).toHaveLength(photos)
+  expect(mind.of("buildLesson").at(-1)!.input.captures.map((capture: CaptureInput) => capture.kind)).toEqual(["step", "auto"])
 })
 
 test("with more than 12 step photos, 12 of them are sent", async () => {
@@ -1331,7 +1390,7 @@ test("the name alone gets a short reply, and the next sentence is the question",
   await hear(rig, "Start lesson.")
 
   await hear(rig, "Hey Tinker.")
-  expect(fake.said.at(-1)).toBe("Yes?")
+  expect(fake.said.at(-1)).toBe("Yes? Ask your question.")
   expect(mind.of("answer")).toHaveLength(0)
   // One word alone is no question. It may be the app hearing its own "Yes?".
   await hear(rig, "Yes", 1000)
@@ -1344,7 +1403,7 @@ test("the name alone gets a short reply, and the next sentence is the question",
   await hear(rig, "And how much water?")
   expect(mind.of("answer")).toHaveLength(1)
   await hear(rig, "Okay Tinker")
-  expect(fake.said.at(-1)).toBe("Yes?")
+  expect(fake.said.at(-1)).toBe("Yes? Ask your question.")
   await hear(rig, "How long do I whisk?", 9000)
   expect(mind.of("answer")).toHaveLength(1)
 })
@@ -1416,16 +1475,18 @@ test("the app does not react to its own voice", async () => {
   expect(coach.snapshot().transcript).toHaveLength(linesBefore)
   expect(coach.snapshot().assistant).toBe("idle")
 
-  // While the app is speaking, everything is ignored too, however late it is.
+  // While the app is speaking, no command runs, however late it is. While
+  // recording, the expert's own words are still kept for the lesson.
   const letSpeechFinish = fake.holdSpeech()
   coach.command("testAudio", {})
   await flush()
   fake.clock.now += 60_000
   coach.heard("I fold the cloth. Next step.", true)
+  coach.heard("If you hear this in the glasses", true) // the app's own sentence, heard while it plays
   letSpeechFinish()
   await coach.whenIdle()
   expect(fake.photoCalls).toHaveLength(0)
-  expect(coach.snapshot().teaching.narration).toBe("")
+  expect(coach.snapshot().teaching.narration).toBe("I fold the cloth.")
   expect(fake.said.at(-1)).toBe("This is the Tinker audio check. If you hear this in the glasses, sound works.")
 })
 
@@ -1499,6 +1560,202 @@ test("an echo that ends in command words cannot start a command", async () => {
   expect(fake.last("teachingState")).toMatchObject({stepCount: 1, narration: ""})
 })
 
+test("a quick spoken answer to the app's prompt is heard, 1.2 seconds after the prompt ended", async () => {
+  const rig = await start()
+  const {fake, coach} = rig
+  await teachThreeSteps(rig)
+  expect(fake.said.at(-1)).toBe(LESSON_READY_3)
+
+  // The expert answers at once: the first piece 0.9 seconds after the prompt ended, the finished sentence after 1.8.
+  fake.clock.now += 900
+  coach.heard("Publish", false)
+  fake.clock.now += 900
+  coach.heard("Publish lesson.", true)
+  await coach.whenIdle()
+  expect(fake.said.at(-1)).toBe("Lesson published.")
+  expect(coach.snapshot().teaching.status).toBe("idle")
+  // One minute later nothing is left half done: every line is finished and nobody is "listening".
+  fake.clock.now += 60_000
+  expect(coach.snapshot().assistant).toBe("idle")
+  expect(coach.snapshot().transcript.every((line) => line.isFinal)).toBe(true)
+
+  // The limit is exactly 1.2 seconds. Sooner, the words can still be the echo of "Say publish lesson to save it".
+  await teachThreeSteps(rig)
+  await hear(rig, "Publish lesson.", 1199)
+  expect(coach.snapshot().teaching.status).toBe("review")
+  await hear(rig, "Publish lesson.", 1)
+  expect(fake.said.at(-1)).toBe("Lesson published.")
+  expect(coach.snapshot().teaching.status).toBe("idle")
+})
+
+test("a finished sentence dropped as an echo closes its unfinished line and ends listening", async () => {
+  const rig = await start()
+  const {fake, coach} = rig
+  await teachThreeSteps(rig)
+  const linesBefore = coach.snapshot().transcript.length
+
+  // A first piece that does not look like the app's words opens a line ("less" was misheard).
+  fake.clock.now += 800
+  coach.heard("Publish less", false)
+  expect(coach.snapshot().assistant).toBe("listening")
+  const open = fake.last("transcriptionUpdate")!
+  expect(open).toMatchObject({speaker: "user", text: "Publish less", isFinal: false})
+  // The finished sentence is the app's own words, 1 second after the prompt: an echo, dropped.
+  fake.clock.now += 200
+  coach.heard("Publish lesson.", true)
+  await coach.whenIdle()
+  expect(coach.snapshot().teaching.status).toBe("review")
+  expect(fake.last("transcriptionUpdate")).toEqual({...open, isFinal: true})
+  expect(fake.last("assistantState")).toEqual({state: "idle"})
+  expect(coach.snapshot().assistant).toBe("idle")
+  expect(coach.snapshot().transcript.slice(linesBefore)).toEqual([{...open, isFinal: true}])
+})
+
+test("a one-word piece of the app's own sentence opens no line and no listening", async () => {
+  const rig = await start()
+  const {fake, coach} = rig
+  await tap(rig, "startLearning", {tutorialId: BUILT_IN.id})
+  const said = fake.said.at(-1)!
+  const words = said.split(" ")
+  const linesBefore = coach.snapshot().transcript.length
+  const statesBefore = fake.of("assistantState").length
+
+  // 900 ms after the speech ended, speech-to-text delivers the echo piece by piece.
+  fake.clock.now += 900
+  coach.heard(words[0]!, false) // one word: "How"
+  coach.heard(words.slice(0, 2).join(" "), false)
+  coach.heard(words.slice(0, 6).join(" "), false)
+  coach.heard(said, true)
+  await coach.whenIdle()
+  fake.clock.now += 60_000
+  coach.tick()
+  expect(coach.snapshot().transcript).toHaveLength(linesBefore)
+  expect(fake.of("assistantState")).toHaveLength(statesBefore) // never "listening"
+  expect(coach.snapshot().assistant).toBe("idle")
+
+  // Long after the app spoke, the same one word is the learner's and shows at once.
+  coach.heard("How", false)
+  expect(coach.snapshot().assistant).toBe("listening")
+  coach.heard("How long does it take", true)
+  expect(lines(coach.snapshot()).at(-1)).toBe("user: How long does it take")
+  expect(coach.snapshot().assistant).toBe("idle")
+
+  // Within the echo window, a one-word piece waits until the sentence holds words the app did not say.
+  await tap(rig, "navigateStep", {direction: "repeat"})
+  const before = coach.snapshot().transcript.length
+  fake.clock.now += 1_000
+  coach.heard("Pour", false)
+  expect(coach.snapshot().transcript).toHaveLength(before)
+  expect(coach.snapshot().assistant).toBe("idle")
+  coach.heard("Pour how much", false)
+  expect(coach.snapshot().assistant).toBe("listening")
+  coach.heard("Pour how much water?", true)
+  expect(lines(coach.snapshot()).at(-1)).toBe("user: Pour how much water?")
+  expect(coach.snapshot().transcript.every((line) => line.isFinal)).toBe(true)
+
+  // A finished one-word command always counts, even right after the app said that word.
+  await hear(rig, "What can I say?") // "Say check, next step, go back, repeat, why, ..."
+  fake.clock.now += 1_000
+  coach.heard("Step.", true) // one word, no command, and the app just said it: its echo
+  coach.heard("Repeat", false) // held back for now
+  expect(coach.snapshot().assistant).toBe("idle")
+  coach.heard("Repeat.", true)
+  await coach.whenIdle()
+  expect(fake.said.at(-1)).toBe(`Step 1. ${BUILT_IN.steps[0]!.instruction_spoken}`)
+  expect(lines(coach.snapshot()).slice(-3)).toEqual([
+    `tinker: ${helpText("learning")}`,
+    "user: Repeat.",
+    `tinker: Step 1. ${BUILT_IN.steps[0]!.instruction_spoken}`,
+  ])
+})
+
+test("while recording, what the expert says during the app's confirmation goes into the lesson", async () => {
+  const rig = await start()
+  const {fake, mind, coach} = rig
+  await hear(rig, "Start teaching.")
+
+  // "Next step." The photo is taken, then the app confirms out loud.
+  const letSpeechFinish = fake.holdSpeech()
+  fake.clock.now += 3000
+  coach.heard("First I sift the matcha. Next step.", true)
+  await flush()
+  expect(fake.said.at(-1)).toBe("Step 1 saved.")
+  // The expert has already moved on. The finished sentence arrives while the confirmation plays.
+  fake.clock.now += 600
+  coach.heard("Then I pour seventy milliliters of hot water over the matcha.", true)
+  // The app's own sentence, heard while it plays, is not the expert.
+  coach.heard("Step 1 saved.", true)
+  coach.heard("Saved. Next step.", true) // the app's word with a command after it
+  // A command needs the app to be silent. The words before it are kept, the command does not run.
+  coach.heard("It should steam. Next step.", true)
+  // Unfinished pieces in that window stay ignored.
+  coach.heard("And now I", false)
+  expect(coach.snapshot().teaching.narration).toBe("Then I pour seventy milliliters of hot water over the matcha. It should steam.")
+  expect(fake.photoCalls).toHaveLength(1)
+  letSpeechFinish()
+  await coach.whenIdle()
+  expect(fake.photoCalls).toHaveLength(1)
+  expect(lines(coach.snapshot()).slice(-3)).toEqual([
+    "tinker: Step 1 saved.",
+    "user: Then I pour seventy milliliters of hot water over the matcha.",
+    "user: It should steam. Next step.",
+  ])
+  expect(coach.snapshot().transcript.every((line) => line.isFinal)).toBe(true)
+
+  // Inside the quiet gap right after the speech it is the same.
+  coach.heard("Steam means it is hot enough.", true)
+  expect(coach.snapshot().teaching.narration.endsWith("It should steam. Steam means it is hot enough.")).toBe(true)
+  await hear(rig, "Now I whisk. Next step.")
+  await hear(rig, "Finish lesson.")
+  const words: string[] = mind.of("buildLesson")[0]!.input.captures.map((capture: CaptureInput) => capture.transcript)
+  expect(words).toEqual([
+    "First I sift the matcha.",
+    "Then I pour seventy milliliters of hot water over the matcha. It should steam. Steam means it is hot enough. Now I whisk.",
+  ])
+
+  // Outside a recording nothing changes: a sentence heard while the app talks is ignored.
+  await hear(rig, "Publish lesson.")
+  await hear(rig, "Start lesson.")
+  const linesBefore = coach.snapshot().transcript.length
+  const letRepeatFinish = fake.holdSpeech()
+  coach.command("navigateStep", {direction: "repeat"})
+  await flush()
+  coach.heard("Hey Tinker, how hot is the water?", true)
+  letRepeatFinish()
+  await coach.whenIdle()
+  expect(mind.of("answer")).toHaveLength(0)
+  expect(coach.snapshot().transcript).toHaveLength(linesBefore + 1) // only the app's own sentence
+})
+
+test("a bare Hey Tinker is answered in several words, and its echo is never taken for the question", async () => {
+  const rig = await start()
+  const {fake, mind, coach} = rig
+  await hear(rig, "Start lesson.")
+  await hear(rig, "Hey Tinker.")
+  expect(fake.said.at(-1)).toBe("Yes? Ask your question.")
+  const linesBefore = coach.snapshot().transcript.length
+
+  // Its echo, 900 ms later, in the forms speech-to-text may write it.
+  fake.clock.now += 900
+  coach.heard("Yes.", true) // one word that is no command and that the app just said
+  coach.heard("Yes ask your question", true)
+  coach.heard("Ask your", false)
+  coach.heard("Ask your question.", true)
+  await coach.whenIdle()
+  expect(coach.snapshot().transcript).toHaveLength(linesBefore)
+  // Heard wrong: the words do not follow the app's sentence, so it shows. But it is no question.
+  coach.heard("Yes, yes.", true)
+  await coach.whenIdle()
+  expect(lines(coach.snapshot()).at(-1)).toBe("user: Yes, yes.")
+  expect(mind.of("answer")).toHaveLength(0)
+  expect(fake.said.at(-1)).toBe("Yes? Ask your question.")
+
+  // The learner's real question, a moment later, is answered.
+  await hear(rig, "How long do I whisk?", 1000)
+  expect(mind.of("answer").map((call) => call.input.question)).toEqual(["How long do I whisk?"])
+  expect(fake.said.at(-1)).toBe("About eighty degrees, not boiling.")
+})
+
 test("an unfinished sentence and its finished version are one conversation line", async () => {
   const rig = await start()
   const {fake, coach} = rig
@@ -1536,10 +1793,14 @@ test("an unfinished sentence and its finished version are one conversation line"
   const letSpeechFinish = fake.holdSpeech()
   coach.command("captureStep", {})
   await flush() // the photo is taken and the app is saying "Step 1 saved."
-  coach.heard("And then I whisk.", true) // the end of the sentence arrives while the app talks, and is ignored
+  // The end of the sentence arrives while the app talks. While recording its
+  // words are kept for the next step, on a line of their own.
+  coach.heard("And then I whisk.", true)
   letSpeechFinish()
   await coach.whenIdle()
   expect(fake.of("transcriptionUpdate").filter((line) => line.id === open.id).at(-1)).toMatchObject({text: "And then I", isFinal: true})
+  expect(lines(coach.snapshot()).at(-1)).toBe("user: And then I whisk.")
+  expect(coach.snapshot().teaching.narration).toBe("And then I whisk.")
   expect(coach.snapshot().transcript.every((line) => line.isFinal)).toBe(true)
 
   // Every line has its own id.
@@ -1643,6 +1904,127 @@ test("a damaged library on the phone does not stop the app from starting", async
   expect(broken.coach.snapshot().tutorials.map((lesson) => lesson.id)).toEqual([BUILT_IN.id])
 })
 
+test("a damaged saved lesson is cleaned on start: never read aloud as undefined, and it can be deleted", async () => {
+  const stored = [
+    {id: "tut_empty_step", title: "Broken", steps: [{}]},
+    {id: "tut_null_step", title: "Null", steps: [null]},
+    {id: "tut_mixed", steps: ["text", null, {instruction_spoken: " Tie it. ", tips: "not a list", photo_taken_at: "soon"}, {id: "own_id", title: "Two"}], tools_required: "rope"},
+    {id: "  ", title: "No id", steps: [{instruction_spoken: "Lost."}]},
+    {id: "tut_mixed", title: "The same id again", steps: [{instruction_spoken: "Twice."}]},
+  ]
+  const rig = await start({key: false, storage: new Map([["library", JSON.stringify(stored)]])})
+  const {fake, coach} = rig
+  // No steps left, or no id: left out. A second lesson with the same id: left out.
+  expect(coach.snapshot().tutorials.map((lesson) => lesson.id)).toEqual(["tut_empty_step", "tut_mixed", BUILT_IN.id])
+  const mixed = coach.snapshot().tutorials[1]!
+  expect(mixed).toMatchObject({title: "Untitled lesson", description: "", total_steps: 2, status: "published", tools_required: []})
+  expect(mixed.steps).toEqual([
+    {id: "tut_mixed_1", step_number: 1, title: "", instruction_spoken: "Tie it.", instruction_detailed: ""},
+    {id: "own_id", step_number: 2, title: "Two", instruction_spoken: "", instruction_detailed: ""},
+  ])
+
+  // A step with no text says nothing where its text would be. Never "undefined".
+  await hear(rig, "Start lesson.")
+  expect(fake.said.at(-1)).toBe("Broken. Say check when a step is done. Step 1.")
+  await tap(rig, "endLearning")
+  await tap(rig, "startLearning", {tutorialId: "tut_mixed"})
+  expect(fake.said.at(-1)).toBe("Untitled lesson. Say check when a step is done. Step 1. Tie it.")
+  await hear(rig, "Any tips?")
+  expect(fake.said.at(-1)).toBe("There are no tips for this step.")
+  await hear(rig, "What do I need?")
+  expect(fake.said.at(-1)).toBe("This lesson lists no materials.")
+  await hear(rig, "Next step.")
+  expect(fake.said.at(-1)).toBe("Step 2.")
+  await tap(rig, "endLearning")
+  for (const sentence of fake.said) expect(sentence).not.toContain("undefined")
+
+  // Both can be deleted, and the phone's copy of the library is written without them.
+  expect(() => coach.command("deleteTutorial", {tutorialId: "tut_empty_step"})).not.toThrow()
+  expect(() => coach.command("deleteTutorial", {tutorialId: "tut_mixed"})).not.toThrow()
+  expect(() => coach.command("deleteTutorial", {tutorialId: "tut_null_step"})).not.toThrow()
+  await coach.whenIdle()
+  expect(coach.snapshot().tutorials).toEqual([BUILT_IN])
+  expect(fake.storage.get("library")).toBe("[]")
+})
+
+test("a failed read of the library at start never wipes the saved lessons at the next save", async () => {
+  const onPhone = [savedLesson("tut_a", "Bowline"), savedLesson("tut_b", "Clove hitch")]
+  // The phone answers a read of "library" with an error (a bridge timeout at start-up) as often as `failures` says.
+  async function startWithFailedReads(failures: number): Promise<Rig & {reads: () => number}> {
+    const storage = libraryOnPhone(...onPhone)
+    storage.set("claudeKey", GOOD_KEY)
+    const fake = fakeDevice({storage})
+    const mind = fakeBrain()
+    const realGet = fake.device.storageGet
+    let reads = 0
+    fake.device.storageGet = async (key) => {
+      if (key === "library" && ++reads <= failures) {
+        throw {code: "ACTION_TIMEOUT", message: "Request timed out waiting for a response from the host"}
+      }
+      return realGet(key)
+    }
+    const coach = new Coach(fake.device, mind.brain)
+    await coach.load()
+    return {fake, mind, coach, reads: () => reads}
+  }
+
+  // The second read works: the saved lessons come back, after the new one, and nothing is lost.
+  const rig = await startWithFailedReads(1)
+  expect(rig.coach.snapshot().tutorials.map((lesson) => lesson.id)).toEqual([BUILT_IN.id])
+  await teachAndPublish(rig)
+  expect(rig.reads()).toBe(2)
+  const ids = ["tut_1003000", "tut_a", "tut_b"]
+  expect(JSON.parse(rig.fake.storage.get("library")!).map((lesson: TutorialModel) => lesson.id)).toEqual(ids)
+  expect(rig.fake.last("tutorialList")!.tutorials.map((lesson) => lesson.id)).toEqual([...ids, BUILT_IN.id])
+  expect(rig.coach.snapshot().tutorials.map((lesson) => lesson.id)).toEqual([...ids, BUILT_IN.id])
+  // From then on a save is a plain save.
+  await tap(rig, "deleteTutorial", {tutorialId: "tut_a"})
+  expect(rig.reads()).toBe(2)
+  expect(JSON.parse(rig.fake.storage.get("library")!).map((lesson: TutorialModel) => lesson.id)).toEqual(["tut_1003000", "tut_b"])
+
+  // The library still cannot be read at the save: nothing is written. The lesson
+  // works for now, and the expert is told on the screen and out loud.
+  const stuck = await startWithFailedReads(99)
+  const before = stuck.fake.storage.get("library")
+  await teachThreeSteps(stuck)
+  await hear(stuck, "Publish lesson.")
+  expect(stuck.fake.storage.get("library")).toBe(before)
+  expect(stuck.fake.said.at(-1)).toBe("The lesson works now, but it could not be saved on this phone.")
+  expect(lines(stuck.coach.snapshot())).toContain(
+    "system: The lesson works now but was not saved to the phone. The lessons already on the phone could not be read, so nothing was written over them. Request timed out waiting for a response from the host",
+  )
+  expect(stuck.coach.snapshot().tutorials.map((lesson) => lesson.id)).toEqual(["tut_1003000", BUILT_IN.id])
+  await hear(stuck, "Start lesson.")
+  expect(stuck.fake.said.at(-1)).toBe("Making matcha. Say check when a step is done. Step 1. Do thing 1.")
+})
+
+test("the photo bytes kept in memory are limited to 30, the oldest dropped first", async () => {
+  // A lesson of 31 steps whose photo links are long dead: every check reads the expert's photo from the phone.
+  const steps = Array.from({length: 31}, (_, i) => ({
+    id: `s${i + 1}`,
+    step_number: i + 1,
+    title: `Step ${i + 1}`,
+    instruction_spoken: `Do part ${i + 1}.`,
+    instruction_detailed: "",
+    photo_key: `k${i + 1}`,
+    photo_taken_at: 0,
+  }))
+  const kept = new Map(steps.map((step) => [step.photo_key, JPEG]))
+  const rig = await start({storage: libraryOnPhone({...savedLesson("tut_long", "A long lesson"), steps, total_steps: 31}), kept})
+  const {fake, mind} = rig
+  await hear(rig, "Start lesson.")
+  for (let i = 0; i < 31; i++) await tap(rig, "checkStep")
+  expect(fake.said.at(-1)).toBe("Nice work. That was the last step. You finished A long lesson.")
+  expect(fake.loads).toEqual(steps.map((step) => step.photo_key))
+
+  // Step 31's photo is still in memory. Step 1's was the oldest of 31 and was dropped: it is read again.
+  await hear(rig, "Start lesson.")
+  await tap(rig, "checkStep")
+  expect(fake.loads.at(-1)).toBe("k1")
+  expect(fake.loads.filter((key) => key === "k1")).toHaveLength(2)
+  expect(mind.of("checkStep").at(-1)!.input.reference).toEqual({kind: "base64", data: JPEG, mediaType: "image/jpeg"})
+})
+
 // ---------- one command at a time ----------
 
 test("End session pressed while the app is speaking still ends the lesson", async () => {
@@ -1673,6 +2055,122 @@ test("End session pressed while the app is speaking still ends the lesson", asyn
   expect(fake.photoCalls).toHaveLength(0) // the dropped check never ran
   // The screen saw no "idle" between the two commands, and exactly one at the end.
   expect(fake.of("assistantState").slice(assistantBefore)).toEqual([{state: "speaking"}, {state: "idle"}])
+})
+
+test("End session during a check or a question stops at once: no verdict, no next step, no answer", async () => {
+  const rig = await start()
+  const {fake, mind, coach} = rig
+  await hear(rig, "Start lesson.")
+
+  // Pressed while Claude judges the photo.
+  let letClaudeAnswer = mind.hold()
+  fake.clock.now += 3000
+  coach.heard("check", true)
+  await flush()
+  expect(mind.of("checkStep")).toHaveLength(1)
+  coach.command("endLearning", {})
+  const saidBefore = fake.said.length
+  const statesBefore = fake.of("assistantState").length
+  letClaudeAnswer()
+  await coach.whenIdle()
+  expect(fake.said.slice(saidBefore)).toEqual(["Lesson stopped."])
+  expect(fake.of("stepVerdict")).toHaveLength(0)
+  expect(fake.lights).toHaveLength(0)
+  expect(fake.of("learningState").map((state) => `${state.active}:${state.currentStep}`)).toEqual(["true:1", "false:1"])
+  expect(coach.snapshot()).toMatchObject({learning: null, lastVerdict: null, busy: false})
+  // No "idle" between the check and the stop.
+  expect(fake.of("assistantState").slice(statesBefore)).toEqual([{state: "speaking"}, {state: "idle"}])
+
+  // Pressed while the photo is being taken: Claude is not even asked.
+  await tap(rig, "startLearning", {tutorialId: BUILT_IN.id})
+  const letPhotoFinish = fake.holdPhoto()
+  coach.command("checkStep", {})
+  await flush()
+  coach.command("endLearning", {})
+  letPhotoFinish()
+  await coach.whenIdle()
+  expect(mind.of("checkStep")).toHaveLength(1)
+  expect(fake.said.at(-1)).toBe("Lesson stopped.")
+
+  // A photo that failed, then End session: only the stop speaks.
+  await tap(rig, "startLearning", {tutorialId: BUILT_IN.id})
+  fake.photoFails = true
+  const letFailedPhotoFinish = fake.holdPhoto()
+  coach.command("checkStep", {})
+  await flush()
+  coach.command("endLearning", {})
+  const saidBeforeFailure = fake.said.length
+  letFailedPhotoFinish()
+  await coach.whenIdle()
+  expect(fake.said.slice(saidBeforeFailure)).toEqual(["Lesson stopped."])
+  fake.photoFails = false
+
+  // A check that fails at Claude, then End session: no "I could not check that".
+  await tap(rig, "startLearning", {tutorialId: BUILT_IN.id})
+  mind.failStatus = 529
+  letClaudeAnswer = mind.hold()
+  coach.command("checkStep", {})
+  await flush()
+  coach.command("endLearning", {})
+  const saidBeforeError = fake.said.length
+  letClaudeAnswer()
+  await coach.whenIdle()
+  expect(fake.said.slice(saidBeforeError)).toEqual(["Lesson stopped."])
+  mind.failStatus = null
+
+  // Pressed while Claude answers a question.
+  await tap(rig, "startLearning", {tutorialId: BUILT_IN.id})
+  letClaudeAnswer = mind.hold()
+  coach.command("askTinker", {text: "How hot should the water be?"})
+  await flush()
+  expect(mind.of("answer")).toHaveLength(1)
+  coach.command("endLearning", {})
+  const saidBeforeAnswer = fake.said.length
+  letClaudeAnswer()
+  await coach.whenIdle()
+  expect(fake.said.slice(saidBeforeAnswer)).toEqual(["Lesson stopped."])
+  expect(coach.snapshot().learning).toBeNull()
+
+  // Without End session, the same check speaks its verdict as before.
+  await tap(rig, "startLearning", {tutorialId: BUILT_IN.id})
+  await tap(rig, "checkStep")
+  expect(fake.said.at(-1)).toBe(`Nice work. Step 2. ${BUILT_IN.steps[1]!.instruction_spoken}`)
+})
+
+test("a new check starts without the old verdict, so a failed check does not leave it on the screen", async () => {
+  const rig = await start()
+  const {fake, mind, coach} = rig
+  const same = (): void => expect(coach.snapshot()).toEqual(fold(fake.events))
+  await hear(rig, "Start lesson.")
+  mind.verdicts = [{result: "fix", say: "The bowl is still dry."}]
+  await tap(rig, "checkStep")
+  expect(coach.snapshot().lastVerdict).toMatchObject({step: 1, result: "fix"})
+  same()
+
+  // The next check: while its photo is taken, the old verdict is gone, and the screen is told "Taking a photo".
+  const letPhotoFinish = fake.holdPhoto()
+  coach.command("checkStep", {})
+  expect(coach.snapshot().lastVerdict).toBeNull()
+  expect(fake.last("assistantState")).toEqual({state: "thinking", message: "Taking a photo"})
+  same()
+  // Claude fails: still no verdict. Only the note says what happened.
+  mind.failStatus = 529
+  letPhotoFinish()
+  await coach.whenIdle()
+  expect(fake.said.at(-1)).toBe("I could not check that. Say check to try again.")
+  expect(coach.snapshot().lastVerdict).toBeNull()
+  same()
+
+  // The same when the photo fails.
+  mind.failStatus = null
+  mind.verdicts = [{result: "unclear", say: "Look at the bowl and try again."}]
+  await tap(rig, "checkStep")
+  expect(coach.snapshot().lastVerdict).toMatchObject({result: "unclear"})
+  fake.photoFails = true
+  await tap(rig, "checkStep")
+  expect(fake.said.at(-1)).toBe("I could not take a photo. Say check to try again.")
+  expect(coach.snapshot().lastVerdict).toBeNull()
+  same()
 })
 
 test("while a command runs the screen is told thinking or speaking, never idle, and idle once at the end", async () => {
@@ -1751,11 +2249,12 @@ test("no failure leaves the app stuck", async () => {
   fake.speechFails = ""
   await tap(rig, "endLearning")
 
-  // The phone cannot save the library: the lesson still works, and the screen says it was not saved.
+  // The phone cannot save the library: the lesson still works, and the expert is told, out loud and on the screen.
   await teachThreeSteps(rig)
   fake.storageFails = "disk full"
   await hear(rig, "Publish lesson.")
-  expect(fake.said.at(-1)).toBe("Lesson published.")
+  expect(fake.said.at(-1)).toBe("The lesson works now, but it could not be saved on this phone.")
+  expect(fake.said).not.toContain("Lesson published.")
   expect(lines(coach.snapshot())).toContain("system: The lesson works now but was not saved to the phone. disk full")
   expect(coach.snapshot().tutorials[0]!.title).toBe("Making matcha")
   expect(fake.storage.has("library")).toBe(false)
@@ -2069,13 +2568,13 @@ test("speech that never ends and a Claude request that never answers do not free
     expect(lines(coach.snapshot()).some((line) => line.startsWith("system: Speech failed"))).toBe(false)
     letSpeechFinish()
 
-    // Claude: the app stops waiting after 90 seconds and says so.
-    const letClaudeAnswer = mind.hold()
+    // A check: the app stops waiting after 30 seconds and says so.
+    let letClaudeAnswer = mind.hold()
     fake.clock.now += 3000
     coach.heard("check", true)
     await microtasks()
     expect(fake.last("assistantState")).toEqual({state: "thinking", message: "Thinking"})
-    jest.advanceTimersByTime(89_999)
+    jest.advanceTimersByTime(29_999)
     await microtasks()
     expect(coach.snapshot().busy).toBe(true)
     jest.advanceTimersByTime(1)
@@ -2083,6 +2582,42 @@ test("speech that never ends and a Claude request that never answers do not free
     expect(fake.said.at(-1)).toBe("I could not check that. Say check to try again.")
     expect(lines(coach.snapshot())).toContain("system: The check failed. Claude did not answer in time.")
     expect(coach.snapshot()).toMatchObject({busy: false, assistant: "idle"})
+    letClaudeAnswer()
+
+    // A question: the same 30 seconds.
+    letClaudeAnswer = mind.hold()
+    fake.clock.now += 3000
+    coach.heard("Tinker, how hot should the water be?", true)
+    await microtasks()
+    jest.advanceTimersByTime(29_999)
+    await microtasks()
+    expect(coach.snapshot().busy).toBe(true)
+    jest.advanceTimersByTime(1)
+    await coach.whenIdle()
+    expect(fake.said.at(-1)).toBe("I could not answer that. Ask again.")
+    expect(lines(coach.snapshot())).toContain("system: The question failed. Claude did not answer in time.")
+    letClaudeAnswer()
+
+    // The lesson build sends many photos and writes a whole lesson: it gets 90 seconds.
+    coach.command("endLearning", {})
+    await coach.whenIdle()
+    coach.command("startTeaching", {})
+    await coach.whenIdle()
+    fake.clock.now += 3000
+    coach.heard("I fold the cloth. Next step.", true)
+    await coach.whenIdle()
+    letClaudeAnswer = mind.hold()
+    coach.command("stopTeaching", {})
+    await microtasks()
+    expect(coach.snapshot().teaching.status).toBe("processing")
+    jest.advanceTimersByTime(89_999)
+    await microtasks()
+    expect(coach.snapshot()).toMatchObject({busy: true, teaching: {status: "processing"}})
+    jest.advanceTimersByTime(1)
+    await coach.whenIdle()
+    expect(fake.said.at(-1)).toBe("I could not build the lesson. Say finish lesson to try again.")
+    expect(fake.last("tutorialGenerated")).toEqual({status: "error", error: "The lesson was not built. Claude did not answer in time."})
+    expect(coach.snapshot().teaching.status).toBe("recording")
     letClaudeAnswer()
   } finally {
     jest.useRealTimers()
@@ -2097,13 +2632,19 @@ test("a sentence from Claude that ends in a command is made harmless before it i
   lesson.steps[1]!.instruction_spoken = "Fold it over, then repeat."
   const rig = await start({storage: libraryOnPhone(lesson), track: false})
   const {fake, mind} = rig
-  mind.verdicts = [{result: "fix", say: "Keep whisking until it is done."}]
+  mind.verdicts = [
+    {result: "fix", say: "Keep whisking, then check it."},
+    // "done" counts only as a whole sentence, so this one needs no help.
+    {result: "fix", say: "Keep whisking until it is done."},
+  ]
   mind.answers = ["Tinker here. Use cooler water."]
 
   await hear(rig, "Start lesson.")
   await hear(rig, "check")
-  expect(fake.said.at(-1)).toBe("Keep whisking until it is done. Okay.")
-  expect(fake.last("stepVerdict")!.say).toBe("Keep whisking until it is done.") // the screen shows Claude's own words
+  expect(fake.said.at(-1)).toBe("Keep whisking, then check it. Okay.")
+  expect(fake.last("stepVerdict")!.say).toBe("Keep whisking, then check it.") // the screen shows Claude's own words
+  await hear(rig, "check")
+  expect(fake.said.at(-1)).toBe("Keep whisking until it is done.")
   await hear(rig, "Tinker, how hot should the water be?")
   expect(fake.said.at(-1)).toBe("So, Tinker here. Use cooler water.")
   await hear(rig, "Next step.")
@@ -2128,7 +2669,8 @@ test("nothing the app said in any test above could be taken for a command", () =
     "I could not build the lesson. Say finish lesson to try again.",
     "This is the Tinker audio check. If you hear this in the glasses, sound works.",
     "The expert gave no reason for this step.",
-    "Yes?",
+    "Yes? Ask your question.",
+    "The lesson works now, but it could not be saved on this phone.",
   ]) {
     expect(sentences).toContain(sentence)
   }
@@ -2143,4 +2685,18 @@ test("nothing the app said in any test above could be taken for a command", () =
     expect(sentence.endsWith(" Okay.")).toBe(false)
     expect(sentence.startsWith("So, ")).toBe(false)
   }
+})
+
+
+// Added by the lead (review finding R4): removing the key must not leave the app,
+// the phone's storage and the screen disagreeing when the phone cannot delete it.
+test("removing the key: when the phone cannot delete it, the app and the screen still say a key is saved", async () => {
+  const {fake, coach} = await start()
+  fake.device.storageDelete = async () => {
+    throw new Error("disk busy")
+  }
+  expect(await coach.setKey("")).toEqual({ok: false, error: "The phone could not remove the key. disk busy"})
+  expect(fake.storage.get("claudeKey")).toBe(GOOD_KEY)
+  expect(coach.snapshot().connection.claudeReady).toBe(true)
+  expect(fake.last("connectionStatus")?.claudeReady).toBe(true)
 })

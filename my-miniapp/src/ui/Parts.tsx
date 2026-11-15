@@ -4,8 +4,9 @@
  * WHY THIS FILE EXISTS
  *   The Learning tab, the Teaching tab and the settings card all need the same
  *   few things: a photo that hides itself when its link is dead, a red error
- *   sentence, and a button that asks twice before it throws something away.
- *   Keeping them here means each is written once.
+ *   sentence that puts known failures in plain words, and a button that asks
+ *   twice before it throws something away. Keeping them here means each is
+ *   written once.
  */
 
 import {useEffect, useState} from "react"
@@ -58,12 +59,49 @@ export function Photo({link, alt, caption, className}: {
   )
 }
 
-/** One red sentence for a failure. The text comes from the background and is shown as it is. */
-export function ErrorLine({children}: {children: ReactNode}): JSX.Element {
+/**
+ * Failures the person can do something about, in plain words. The background
+ * reports Claude's own error text (for example "Overloaded" or
+ * "invalid x-api-key"), which means little to someone holding a tea bowl.
+ * The patterns match that text: the screen never sees the status number itself
+ * unless Claude sent no message (then claude.ts writes "Claude answered with HTTP 529.").
+ */
+const PLAIN_WORDS: Array<[RegExp, string]> = [
+  // HTTP 529. Claude's own message for it is "Overloaded".
+  [/\b529\b|overloaded/i, "Claude is busy right now. Try again in a moment."],
+  // HTTP 401: a wrong or revoked key. Claude's own message for it is "invalid x-api-key".
+  [/\b401\b|invalid x-api-key|authentication/i, "Claude rejected the key."],
+  // The phone could not reach Claude at all (claude.ts: "No connection to Claude.").
+  [/no connection/i, "No internet connection to Claude."],
+]
+
+/** The plain sentence for a known failure, or "" when the text is not one of them. */
+export function plainWords(text: string): string {
+  for (const [pattern, plain] of PLAIN_WORDS) if (pattern.test(text)) return plain
+  return ""
+}
+
+/**
+ * A sentence from the background. A known failure gets its plain sentence
+ * first, with the background's own words after it in smaller type, so nothing
+ * is hidden from the person who has to fix it.
+ */
+export function Explained({text}: {text: string}): JSX.Element {
+  const plain = plainWords(text)
+  if (!plain) return <span>{text}</span>
+  return (
+    <span>
+      {plain} <small className="error-detail">{text}</small>
+    </span>
+  )
+}
+
+/** One red sentence for a failure. The text comes from the background. Known failures are explained first. */
+export function ErrorLine({children}: {children: string}): JSX.Element {
   return (
     <p className="error-line" role="alert">
       <AlertIcon size={16} />
-      <span>{children}</span>
+      <Explained text={children} />
     </p>
   )
 }
@@ -105,6 +143,11 @@ export function ConfirmButton({label, confirmLabel, onConfirm, className, disabl
       <span>{armed ? confirmLabel : label}</span>
     </button>
   )
+}
+
+/** "1 Step", "6 Steps": the size of a lesson. */
+export function stepCount(count: number): string {
+  return `${count} ${count === 1 ? "Step" : "Steps"}`
 }
 
 /** Seconds as MM:SS, for the recording clock. */

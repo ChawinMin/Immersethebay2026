@@ -17,14 +17,30 @@ import {useState} from "react"
 import type {JSX} from "react"
 import type {ConnectionStatus} from "../shared/channels"
 import {KeyIcon, Volume2Icon} from "./Icons"
-import {ErrorLine} from "./Parts"
+import {ConfirmButton, ErrorLine} from "./Parts"
+
+/**
+ * How long the screen waits for the answer to a key save. The background's
+ * test request normally takes a second or two. Without a limit, a background
+ * that never answers would leave "Testing the key..." on screen with both
+ * buttons off.
+ */
+const KEY_TIMEOUT_MS = 30000
+
+/** What the Teaching tab needs to know about a save in progress. See `KeyCard`. */
+export interface KeySaveWatch {
+  /** A save has started. */
+  onStart?: () => void
+  /** The save has ended. `saved` is true only when a new key was accepted. */
+  onDone?: (saved: boolean) => void
+}
 
 /**
  * The key field with Save and Remove.
  * The only state kept here is the text in the box and the answer to the last
  * save. Whether a key is saved comes from the background (`connection`).
  */
-function KeyBox({connection}: {connection: ConnectionStatus}): JSX.Element {
+function KeyBox({connection, onStart, onDone}: {connection: ConnectionStatus} & KeySaveWatch): JSX.Element {
   const [key, setKey] = useState("")
   const [saving, setSaving] = useState(false)
   // The answer to the last save. `ok: false` is drawn in red.
@@ -33,19 +49,28 @@ function KeyBox({connection}: {connection: ConnectionStatus}): JSX.Element {
   const save = async (value: string) => {
     setSaving(true)
     setResult(null)
+    onStart?.()
+    let saved = false
     try {
       // The background makes one real request to Claude with this key before it saves it.
-      const answer = await mentra.request("setKey", {key: value})
+      const answer = await mentra.request("setKey", {key: value}, {timeout: KEY_TIMEOUT_MS})
       if (answer.ok) {
         setResult({ok: true, text: value ? "Key saved." : "Key removed."})
         setKey("")
+        saved = value !== ""
       } else {
         setResult({ok: false, text: answer.error || "The key was not saved."})
       }
-    } catch {
-      setResult({ok: false, text: "The key was not saved. Close this screen, open it again, and retry."})
+    } catch (err) {
+      // The SDK names its errors. `instanceof` does not work across the bridge, the name does.
+      const timedOut = (err as {name?: unknown} | null)?.name === "MentraRpcTimeoutError"
+      setResult({
+        ok: false,
+        text: timedOut ? "No answer from Tinker. Try again." : "The key was not saved. Close this screen, open it again, and retry.",
+      })
     }
     setSaving(false)
+    onDone?.(saved)
   }
 
   return (
@@ -83,10 +108,16 @@ function KeyBox({connection}: {connection: ConnectionStatus}): JSX.Element {
           <KeyIcon size={16} />
           <span>Save key</span>
         </button>
+        {/* Asks twice, like Delete and Discard: it sits next to Save, and one slip would
+            take the key off the phone in the middle of a demo. */}
         {connection.claudeReady && (
-          <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => save("")}>
-            Remove key
-          </button>
+          <ConfirmButton
+            label="Remove key"
+            confirmLabel="Sure? Tap again"
+            className="btn btn-secondary"
+            disabled={saving}
+            onConfirm={() => save("")}
+          />
         )}
       </div>
       {saving && <p className="note-line">Testing the key...</p>}
@@ -95,11 +126,15 @@ function KeyBox({connection}: {connection: ConnectionStatus}): JSX.Element {
   )
 }
 
-/** The key box alone, in its own card. Shown on the Teaching tab while no key is saved. */
-export function KeyCard({connection}: {connection: ConnectionStatus}): JSX.Element {
+/**
+ * The key box alone, in its own card. Shown on the Teaching tab while no key
+ * is saved. `onStart` and `onDone` let that tab keep the card up for a moment
+ * after a save works, so "Key saved." is seen before the card goes away.
+ */
+export function KeyCard({connection, onStart, onDone}: {connection: ConnectionStatus} & KeySaveWatch): JSX.Element {
   return (
     <section className="card settings-card key-card">
-      <KeyBox connection={connection} />
+      <KeyBox connection={connection} onStart={onStart} onDone={onDone} />
     </section>
   )
 }

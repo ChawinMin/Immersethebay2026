@@ -103,7 +103,7 @@ bun run build
 bun test
 ```
 
-153 tests in four files. They run whole lessons against fake glasses and a fake Claude, draw the screens in a fake browser, and run the built app against a simulated phone.
+244 tests in six files. They run whole lessons against fake glasses and a fake Claude, draw the screens in a fake browser, and run the built app against a simulated phone.
 
 Two more programs use the real Claude API with a real key: `scripts/real-claude-test.ts` (the Claude code alone) and `scripts/real-app-test.ts` (the whole app on a simulated phone). `docs/TESTING.md` explains every test and how to run both programs.
 

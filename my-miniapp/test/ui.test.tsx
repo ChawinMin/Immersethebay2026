@@ -6,7 +6,8 @@
  *   the real <App /> inside the real <MentraProvider> in a fake browser
  *   (happy-dom), with a fake `mentra` object in place of the Mentra App. The
  *   fake records every `send` and `request` and lets a test push events, the
- *   way the background would. No glasses, no phone, no network.
+ *   way the background would. No glasses, no phone, no network. The fake
+ *   browser and the fake Mentra App are in test/ui-dom.tsx.
  *
  * WHAT IT PROVES
  *   - before the first snapshot nothing is claimed ("Connecting...")
@@ -15,281 +16,60 @@
  *   - errors from the background are visible
  *   - the back gesture and the busy rule behave as designed
  *
+ * MORE SCREEN TESTS
+ *   test/ui-render.test.tsx  timers, the key box, photos, history, busy, the fixes of the review
+ *   test/ui-coach.test.ts    the screen's data fed by the REAL Coach, and a fuzzer
+ *
  * WHAT IT CANNOT PROVE
  *   Layout, colours and the real Mentra bridge. Those were checked by eye in a
- *   headless browser at 380 px wide (pictures in /home/claude/reports/ui-shots).
+ *   headless browser (pictures in /home/claude/reports/ui-shots).
  *
  * Run it with:  bun test test/ui.test.tsx
  */
 
 import {afterAll, afterEach, beforeEach, describe, expect, test} from "bun:test"
-import {GlobalRegistrator} from "@happy-dom/global-registrator"
-import type {
-  Channels,
-  ConnectionStatus,
-  LearningState,
-  Snapshot,
-  TeachingState,
-  TutorialModel,
-  TutorialStepModel,
-} from "../src/shared/channels"
+import type {TeachingState, TutorialModel} from "../src/shared/channels"
+import {
+  BUILT_IN,
+  FakeMentra,
+  NOTHING,
+  READY,
+  RECORDED,
+  TEACH_IDLE,
+  all,
+  button,
+  click,
+  emit,
+  lesson,
+  mount,
+  resetPage,
+  screenText,
+  settle,
+  snapshot,
+  startDom,
+  step,
+  stopDom,
+  type,
+  unmountPage,
+} from "./ui-dom"
 
-// The fake browser must exist before React is loaded, so React is imported
-// further down with `await import`, not at the top of the file.
-GlobalRegistrator.register()
-// Tells React that `act` is in use, so it does not print a warning on every update.
-;(globalThis as unknown as {IS_REACT_ACT_ENVIRONMENT: boolean}).IS_REACT_ACT_ENVIRONMENT = true
-
-// ---------------------------------------------------------------- a history that can go back
-
-/**
- * happy-dom's `history.go()` does nothing, but the screen's tabs and views use
- * the browser history (useHistoryState). This stand-in keeps a real stack and
- * fires `popstate` a moment later, like a browser does.
- */
-function installHistory(): {reset: () => void} {
-  let stack: unknown[] = [null]
-  let index = 0
-  const clone = (value: unknown) => (value === null || value === undefined ? null : JSON.parse(JSON.stringify(value)))
-  const h = window.history
-  Object.defineProperty(h, "state", {configurable: true, get: () => stack[index]})
-  h.pushState = (state: unknown) => {
-    stack = [...stack.slice(0, index + 1), clone(state)]
-    index++
-  }
-  h.replaceState = (state: unknown) => {
-    stack[index] = clone(state)
-  }
-  h.go = (delta = 0) => {
-    const next = index + delta
-    if (next < 0 || next >= stack.length) return
-    setTimeout(() => {
-      index = next
-      window.dispatchEvent(new window.PopStateEvent("popstate", {state: stack[index]}))
-    }, 0)
-  }
-  h.back = () => h.go(-1)
-  return {
-    reset() {
-      stack = [null]
-      index = 0
-    },
-  }
-}
-const fakeHistory = installHistory()
-
-// ---------------------------------------------------------------- the fake Mentra App
-
-type Handler = (payload: unknown) => void
-
-/** Stands in for the `mentra` object the Mentra App adds to the page. */
-class FakeMentra {
-  sent: Array<{channel: string; payload: unknown}> = []
-  requests: Array<{channel: string; payload: unknown}> = []
-  readyCalls = 0
-  /** What `request` answers, per channel. With no entry the request never settles. */
-  answers: Record<string, (payload: unknown) => Promise<unknown>> = {}
-  private handlers = new Map<string, Set<Handler>>()
-  private openCallbacks: Array<() => void> = []
-
-  send = (channel: string, payload: unknown) => {
-    this.sent.push({channel, payload})
-  }
-  on = (channel: string, cb: Handler) => {
-    if (!this.handlers.has(channel)) this.handlers.set(channel, new Set())
-    this.handlers.get(channel)?.add(cb)
-    return () => {
-      this.handlers.get(channel)?.delete(cb)
-    }
-  }
-  request = (channel: string, payload: unknown) => {
-    this.requests.push({channel, payload})
-    const answer = this.answers[channel]
-    return answer ? answer(payload) : new Promise(() => {})
-  }
-  // Like the real bridge: onOpen callbacks run once `ready()` has been called.
-  onOpen = (cb: () => void) => {
-    if (this.readyCalls > 0) cb()
-    else this.openCallbacks.push(cb)
-    return () => {}
-  }
-  onClose = () => () => {}
-  ready = () => {
-    this.readyCalls++
-    if (this.readyCalls === 1) this.openCallbacks.forEach((cb) => cb())
-  }
-
-  /** Deliver one event from the "background" to the screen. */
-  emit<C extends keyof Channels>(channel: C, payload: Channels[C]) {
-    for (const cb of this.handlers.get(channel) ?? []) cb(payload)
-  }
-  /** How many listeners the screen has on a channel. */
-  listeners(channel: string): number {
-    return this.handlers.get(channel)?.size ?? 0
-  }
-  sentOn(channel: string): unknown[] {
-    return this.sent.filter((message) => message.channel === channel).map((message) => message.payload)
-  }
-}
-
-// React and the screen are loaded only now, after the fake browser exists.
-const {act} = await import("react")
-const {createRoot} = await import("react-dom/client")
-const {MentraProvider} = await import("@mentra/miniapp/ui")
-const {App} = await import("../src/ui/App")
-const {applyEvent, EMPTY, isBusy} = await import("../src/ui/state")
+// The fake browser must exist before React is loaded, so React comes from startDom(), not from an import.
+const {act, applyEvent, EMPTY, isBusy} = await startDom()
 
 let fake: FakeMentra
-let root: ReturnType<typeof createRoot> | null = null
-
-/** Mount the whole screen exactly as main.tsx does. */
-async function mount(): Promise<void> {
-  const host = document.createElement("div")
-  document.body.append(host)
-  root = createRoot(host)
-  await act(async () => {
-    root?.render(
-      <MentraProvider>
-        <App />
-      </MentraProvider>,
-    )
-  })
-}
-
-/** Push one background event and let React redraw. */
-async function emit<C extends keyof Channels>(channel: C, payload: Channels[C]): Promise<void> {
-  await act(async () => {
-    fake.emit(channel, payload)
-  })
-  await settle()
-}
-
-/** Let timers that are due (the fake history's popstate) and promises finish. */
-async function settle(): Promise<void> {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  })
-}
-
-async function click(element: Element | undefined | null): Promise<void> {
-  if (!element) throw new Error("click: the element is not on the screen")
-  await act(async () => {
-    ;(element as HTMLElement).click()
-  })
-  await settle()
-}
-
-/** Type into a React input: set the value the way a browser would, then fire `input`. */
-async function type(element: Element | null, value: string): Promise<void> {
-  if (!element) throw new Error("type: the input is not on the screen")
-  const proto = element.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype
-  const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set
-  await act(async () => {
-    setter?.call(element, value)
-    element.dispatchEvent(new window.Event("input", {bubbles: true}))
-  })
-}
-
-const screenText = () => (document.body.textContent ?? "").replace(/\s+/g, " ")
-const all = (selector: string) => Array.from(document.querySelectorAll(selector))
-/** The button whose visible text (or aria-label) is exactly `label`. */
-const button = (label: string) =>
-  all("button").find((b) => (b.textContent ?? "").trim() === label || b.getAttribute("aria-label") === label) as
-    | HTMLButtonElement
-    | undefined
-
-// ---------------------------------------------------------------- test data
-
-const step = (n: number, extra: Partial<TutorialStepModel> = {}): TutorialStepModel => ({
-  id: `step_0${n}`,
-  step_number: n,
-  title: `Title of step ${n}`,
-  instruction_spoken: `Library text of step ${n}.`,
-  instruction_detailed: `Detail of step ${n}.`,
-  ...extra,
-})
-
-const BUILT_IN: TutorialModel = {
-  id: "tut_matcha_ceremonial_01",
-  title: "How to Make Matcha",
-  description: "The built-in lesson.",
-  category: "Culinary Arts",
-  total_steps: 3,
-  estimated_duration_minutes: 5,
-  created_at: "2026-11-14T15:00:00Z",
-  status: "published",
-  steps: [step(1), step(2), step(3)],
-  built_in: true,
-}
-
-const RECORDED: TutorialModel = {
-  id: "tut_1763140000000",
-  title: "Tie a Bowline Knot",
-  description: "A loop that does not slip.",
-  total_steps: 2,
-  estimated_duration_minutes: 2,
-  created_at: "2026-11-14T17:00:00Z",
-  status: "published",
-  steps: [step(1), step(2)],
-}
-
-const READY: ConnectionStatus = {glassesConnected: true, hasCamera: true, hasMic: true, claudeReady: true, keyHint: "9xQz"}
-const NOTHING: ConnectionStatus = {glassesConnected: false, hasCamera: false, hasMic: false, claudeReady: false, keyHint: ""}
-const TEACH_IDLE: TeachingState = {status: "idle", elapsedSeconds: 0, frameCount: 0, stepCount: 0, narration: ""}
-
-const snapshot = (over: Partial<Snapshot> = {}): Snapshot => ({
-  connection: READY,
-  tutorials: [RECORDED, BUILT_IN],
-  teaching: TEACH_IDLE,
-  draft: null,
-  learning: null,
-  lastVerdict: null,
-  transcript: [],
-  assistant: "idle",
-  busy: false,
-  ...over,
-})
-
-const lesson = (over: Partial<LearningState> = {}): LearningState => ({
-  active: true,
-  finished: false,
-  sessionId: "session-1",
-  tutorialId: BUILT_IN.id,
-  currentStep: 2,
-  totalSteps: 3,
-  // Deliberately NOT the text in the library: the screen must show `stepData`.
-  stepData: step(2, {instruction_spoken: "Sift two scoops into the dry bowl."}),
-  assistantState: "idle",
-  ...over,
-})
 
 // ---------------------------------------------------------------- setup
 
-beforeEach(() => {
-  fakeHistory.reset()
-  document.body.innerHTML = ""
-  document.documentElement.className = ""
-  fake = new FakeMentra()
-  ;(globalThis as unknown as {mentra: unknown}).mentra = fake
+beforeEach(async () => {
+  fake = await resetPage()
 })
 
-afterEach(async () => {
-  // Unmount so timers (the snapshot retry) stop, and let a pending popstate land.
-  await act(async () => {
-    root?.unmount()
-  })
-  root = null
-  await new Promise((resolve) => setTimeout(resolve, 5))
-})
+afterEach(unmountPage)
 
 // `bun test` runs every test file in one process. Take the fake browser away
 // again, so the background tests that run after this file see a plain engine
 // with no `window` and no `document`.
-afterAll(async () => {
-  delete (globalThis as unknown as {mentra?: unknown}).mentra
-  delete (globalThis as unknown as {IS_REACT_ACT_ENVIRONMENT?: boolean}).IS_REACT_ACT_ENVIRONMENT
-  await GlobalRegistrator.unregister()
-})
+afterAll(stopDom)
 
 // ---------------------------------------------------------------- the tests
 
@@ -308,8 +88,8 @@ describe("before the first snapshot", () => {
     expect(fake.readyCalls).toBe(1)
     expect(fake.listeners("snapshot")).toBe(1)
     expect(fake.listeners("learningState")).toBe(1)
-    // onOpen asked for the full picture.
-    expect(fake.requests[0]).toEqual({channel: "getSnapshot", payload: {}})
+    // onOpen asked for the full picture, with a time limit so unanswered requests do not pile up.
+    expect(fake.requests[0]).toEqual({channel: "getSnapshot", payload: {}, options: {timeout: 5000}})
     // Nothing was sent that changes anything.
     expect(fake.sent).toHaveLength(0)
   })
@@ -401,8 +181,13 @@ describe("learning session", () => {
     await emit("snapshot", snapshot())
     await emit("learningState", lesson())
 
-    await emit("stepVerdict", {step: 1, result: "pass", say: "Sentence for another step."})
+    // A correction for another step does not sit under this one. (A PASS of the step
+    // just before does show, as a note: see "the pass note" in ui-render.test.tsx.)
+    await emit("stepVerdict", {step: 1, result: "fix", say: "Sentence for another step."})
     expect(screenText()).not.toContain("Sentence for another step.")
+    expect(all(".verdict-chip")).toHaveLength(0)
+    await emit("stepVerdict", {step: 3, result: "pass", say: "Sentence for a later step."})
+    expect(screenText()).not.toContain("Sentence for a later step.")
     expect(all(".verdict-chip")).toHaveLength(0)
 
     await emit("stepVerdict", {step: 2, result: "fix", say: "The powder is still lumpy.", photoUrl: "https://photos.test/learner.jpg"})
@@ -717,7 +502,8 @@ describe("settings", () => {
 
     await type(input, "sk-ant-test-wrong")
     await click(button("Save key"))
-    expect(fake.requests.filter((r) => r.channel === "setKey")).toEqual([{channel: "setKey", payload: {key: "sk-ant-test-wrong"}}])
+    // The screen gives up waiting after 30 seconds (see ui-render.test.tsx for what it then says).
+    expect(fake.requestsOn("setKey")).toEqual([{channel: "setKey", payload: {key: "sk-ant-test-wrong"}, options: {timeout: 30000}}])
     expect(screenText()).toContain("Testing the key...")
 
     await act(async () => {
@@ -731,14 +517,19 @@ describe("settings", () => {
     expect(screenText()).toContain("No key saved")
   })
 
-  test("a saved key shows its last four characters, and Remove sends an empty key", async () => {
+  test("a saved key shows its last four characters, and Remove asks twice, then sends an empty key", async () => {
     fake.answers.setKey = async () => ({ok: true, error: ""})
     await mount()
     await emit("snapshot", snapshot())
     expect(screenText()).toContain("Key saved, ends in 9xQz")
 
+    // Text in the box must not travel with a removal.
+    await type(document.querySelector("#claude-key"), "sk-ant-test-typed-but-not-saved")
     await click(button("Remove key"))
-    expect(fake.requests.filter((r) => r.channel === "setKey")).toEqual([{channel: "setKey", payload: {key: ""}}])
+    // The first tap only asks. Nothing is sent: the key sits next to Save, and a slip would remove it.
+    expect(fake.requestsOn("setKey")).toHaveLength(0)
+    await click(button("Sure? Tap again"))
+    expect(fake.requestsOn("setKey")).toEqual([{channel: "setKey", payload: {key: ""}, options: {timeout: 30000}}])
     expect(screenText()).toContain("Key removed.")
     // Still "saved" on screen until connectionStatus arrives.
     expect(screenText()).toContain("Key saved, ends in 9xQz")

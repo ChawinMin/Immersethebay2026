@@ -128,8 +128,10 @@ const LEARNING: Phrase[] = [
   {command: "check", words: "check my step"},
   {command: "check", words: "im done"},
   {command: "check", words: "i am done"},
-  {command: "check", words: "done"},
-  {command: "check", words: "finished"},
+  // Whole sentence only. In a loud room "...that is how it is done" or "tell me
+  // when you are finished" would otherwise take a photo and ask Claude.
+  {command: "check", words: "done", alone: true},
+  {command: "check", words: "finished", alone: true},
   {command: "check", words: "how does this look"},
   {command: "check", words: "is this right"},
   {command: "next", words: "next step"},

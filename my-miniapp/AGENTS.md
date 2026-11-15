@@ -26,12 +26,14 @@ The screens were designed by one teammate and the logic came from an earlier app
 | Type-check (`bun run typecheck`) | Pass, 0 errors |
 | Mentra build (`bun run build`), with its check of the background code | Pass |
 | `test/claude.test.ts`: the requests to Claude against a fake `fetch`, and the built-in lesson | Pass, 77 tests |
-| `test/coach.test.ts`: whole lessons against fake glasses and a fake Claude | Pass, 46 tests |
+| `test/coach.test.ts`: whole lessons against fake glasses and a fake Claude | Pass, 58 tests |
 | `test/ui.test.tsx`: the screens in a fake browser | Pass, 29 tests |
+| `test/ui-render.test.tsx`: more screen tests (timers, key box, photos, history, busy) | Pass, 50 tests |
+| `test/ui-coach.test.ts`: the screen's data fed by the real Coach, with a fuzzer | Pass, 29 tests |
 | `test/phone.test.ts`: the built app on a simulated phone, a full teach and learn run | Pass, 1 test |
 | Run on real Mentra Live glasses | Never run |
-| Real Claude API | see docs/TESTING.md, section Real Claude API test. `scripts/real-claude-test.ts` ran three times from a cloud machine, not a phone: 8 of 9 checks, then 9 of 9 twice after the praise rule was tightened. |
-| Photo checks against the built-in lesson (no expert photos) | Strict: in all three runs above, a correct drawing was called "fix". See D28 in `docs/DECISIONS.md`. |
+| Real Claude API | see docs/TESTING.md, section Real Claude API test. From a cloud machine, not a phone: `scripts/real-claude-test.ts` passed 8 of 9 checks on its first run, then 9 of 9 on the next runs after the praise rule was tightened. `scripts/real-app-test.ts` passed 12 of 12. |
+| Photo checks against the built-in lesson (no expert photos) | Strict: in three runs of `scripts/real-claude-test.ts`, a correct drawing was called "fix". See D28 in `docs/DECISIONS.md`. |
 | Glasses button reaching the app | Confirmed in Mentra's source, not yet run on glasses |
 
 When you run something on real hardware, update this table and the "Open questions" list in `docs/DECISIONS.md`. Do not write that something works on the glasses unless it was run on the glasses.
@@ -87,6 +89,8 @@ bun scripts/real-app-test.ts       # the built app on a simulated phone, with th
 | What happens to an error inside a handler | `safely` in `src/background/index.ts`, and the `catch` in `run` in `src/background/coach.ts` |
 | Timed photos | `AUTO_CAPTURE_MS` (0 turns them off) and `MAX_CAPTURES` in `src/background/coach.ts` |
 | How many photos Claude gets for a lesson | `MAX_PLAN_PHOTOS` in `src/background/coach.ts` |
+| How long the app waits for Claude | `CLAUDE_GUARD_MS` (checks, answers, the key test) and `BUILD_GUARD_MS` (the lesson build) in `src/background/coach.ts` |
+| The reply to a bare "Hey Tinker" | `ASK_REPLY` in `src/background/coach.ts`. Keep it several words long (D17 in `docs/DECISIONS.md`). |
 | The quiet gap and the echo filter | `QUIET_AFTER_SPEECH_MS`, `ECHO_WINDOW_MS`, `ECHO_PERCENT`, `ECHO_REPLY_MS` in `src/background/coach.ts` |
 | When a photo link counts as old | `LINK_FRESH_MS`, `LINK_DEAD_MS` in `src/background/coach.ts` |
 | How many lessons are kept | `MAX_LIBRARY` in `src/background/coach.ts` |
