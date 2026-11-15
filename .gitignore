@@ -107,3 +107,16 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# ---------- Tinker (added for the phone miniapp) ----------
+# The rest of this file came from a Unity template and does not cover this project.
+# Never commit a key: this repository is public.
+.env
+.env.*
+node_modules/
+dist/
+build/
+*.zip
+__pycache__/
+*.pyc
+.DS_Store

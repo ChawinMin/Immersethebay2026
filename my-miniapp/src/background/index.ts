@@ -1,545 +1,226 @@
 /**
- * Tinker — Mentra Live Smart Glasses Background Controller
+ * index.ts: the background entry point, and the ONLY background file that
+ * touches the Mentra SDK.
  *
- * Runs inside the MentraOS JSContext on the host phone.
- * Directly owns all hardware interactions:
- *   - session.camera: POV demonstration photo capture & warmup
- *   - session.speaker: Audio instruction delivery & Tinker voice synthesis
- *   - session.transcription: Real-time learner speech recognition
- *   - session.input: Hands-free button press interaction
- *   - session.ui: Bidirectional communication with companion React UI
+ * WHERE THIS RUNS
+ *   On the phone, inside the Mentra App, for as long as the miniapp is on.
+ *   It keeps running with the phone screen off. It is a bare JavaScript engine:
+ *   no window, document, process, URL, Headers or Node modules. `bun run build`
+ *   fails with a file and line number if this folder uses one of those.
+ *
+ * WHAT THIS FILE DOES
+ *   It builds a `Device` (contracts.ts) out of real Mentra calls and hands it,
+ *   together with the real `Brain` (claude.ts), to the `Coach` (coach.ts).
+ *   The Coach holds all the behaviour.
+ *
+ *     photos   session.camera.takePhoto()
+ *     speech   session.speaker.speak()         plays through the glasses
+ *     hearing  session.transcription           the glasses microphone, as text
+ *     button   session.input.onButtonPress()
+ *     light    session.led
+ *     saving   session.storage (small text) and session.blob (photos)
+ *     screen   session.ui                      messages from channels.ts
+ *
+ * WHY THE SPLIT
+ *   The Coach never imports Mentra, so the tests run it with fake glasses.
+ *   If the team ever moves to Mentra's Bluetooth SDK, this is the one file to
+ *   rewrite. Reasons for every choice here: docs/DECISIONS.md.
  */
 
-import {registerMiniapp} from "@mentra/miniapp/background"
-import type {UIModule} from "@mentra/miniapp/background"
-import type {Channels, TutorialModel, TutorialStepModel} from "../shared/channels"
+import {bytesToBase64, registerMiniapp} from "@mentra/miniapp/background"
+import type {Channels, UiCommandChannel} from "../shared/channels"
+import {createBrain} from "./claude"
+import {Coach} from "./coach"
+import type {Device, Hardware} from "./contracts"
 
-// Backend configuration (can be updated dynamically or loaded via env)
-const BACKEND_URL = "http://127.0.0.1:8000"
+// ---------- settings you can change ----------
 
-registerMiniapp(async (session) => {
-  const ui = session.ui as unknown as UIModule<Channels>
+/** Language of the spoken commands and the narration. The commands in commands.ts are English. */
+const LANGUAGE = "en-US"
+/** Photo size: "low", "medium", "high" or "max". Medium is enough for Claude and uploads faster. */
+const PHOTO_SIZE = "medium"
+/** Give up on a photo after this long, in milliseconds. The SDK's own default is 60 seconds. */
+const PHOTO_TIMEOUT_MS = 25000
+/**
+ * Unusual words the speech-to-text should expect in every session.
+ * "Tinker" matters most: a question to the app starts with that word.
+ * The Coach adds the tools and ingredients of the lesson being learned.
+ */
+const BASE_VOCABULARY = ["Tinker", "matcha", "chawan", "chasen", "chashaku", "whisk", "sifter", "froth"]
+/** Speech-to-text gets at most this many boosted words. */
+const MAX_VOCABULARY = 40
 
-  // =========================================================================
-  // STATE MANAGEMENT
-  // =========================================================================
-  let isRecording = false
-  let recordingStartTime = 0
-  let photoIntervalId: any = null
-  let elapsedTimerId: any = null
-  let frameIndex = 0
-  let currentSessionId = ""
-  let recordedFrames: Array<{photoUrl: string; timestamp: number; frameIndex: number}> = []
+/**
+ * Every plain message the screen can send. Written as an object so that
+ * TypeScript reports an error here when a command is added to
+ * `UiCommandChannel` in channels.ts and forgotten in this list.
+ */
+const COMMANDS: Record<UiCommandChannel, true> = {
+  startTeaching: true,
+  captureStep: true,
+  stopTeaching: true,
+  discardTeaching: true,
+  publishTutorial: true,
+  deleteTutorial: true,
+  startLearning: true,
+  endLearning: true,
+  navigateStep: true,
+  checkStep: true,
+  askTinker: true,
+  requestTutorials: true,
+  testAudio: true,
+  ping: true,
+}
 
-  let activeLearningTutorial: TutorialModel | null = null
-  let currentStepNumber = 1
-  let isSpeaking = false
-
-  // In-memory cache of tutorials
-  const tutorialLibrary = new Map<string, TutorialModel>()
-
-  // =========================================================================
-  // VOCABULARY CONFIGURATION FOR MATCHA & TOOLS
-  // =========================================================================
+/**
+ * Run a handler and keep any error inside it.
+ *
+ * Mentra's source (MentraOS, branch dev, commit f120725) restarts the whole
+ * background when an error escapes a timer callback, and on iPhone also when
+ * one escapes a transcription or button handler. A restart throws away a
+ * recording in progress. The Coach already catches its own errors; this is the
+ * second line of defence, so one bad event can never cost the demo.
+ */
+function safely(what: string, handler: () => void): void {
   try {
-    session.transcription.configure({
-      languageHints: ["en", "ja"],
-      vocabulary: ["matcha", "chawan", "chasen", "chashaku", "whisk", "sifter", "froth", "Tinker", "micro-foam"]
-    })
+    handler()
   } catch (err) {
-    console.warn("Could not configure transcription vocabulary:", err)
+    console.error(`[tinker] ${what} failed:`, err)
   }
+}
 
-  // =========================================================================
-  // HELPER: SPEAK WITH ECHO SUPPRESSION
-  // =========================================================================
-  const speakInstruction = async (text: string) => {
-    if (!text || !text.trim()) return
+// The Mentra App runs this function once when the miniapp starts.
+// It keeps its loading screen up until the promise this function returns has settled.
+registerMiniapp<Channels>(async (session) => {
+  // The SDK types each channel separately. These two loosely typed views let
+  // one loop register every command and one function send every event. The
+  // channel names and payloads are still checked: by `COMMANDS` above and by
+  // `Device.emit` in contracts.ts.
+  const sendToScreen = session.ui.send as unknown as (channel: string, payload: unknown) => void
+  const onScreenMessage = session.ui.on as unknown as (channel: string, handler: (payload: unknown) => void) => void
 
-    isSpeaking = true
-    ui.send("assistantState", {state: "speaking", message: "Tinker speaking"})
+  /** What the phone last told us about the glasses. null until it has said anything. */
+  let glassesConnected: boolean | null = null
 
-    try {
-      await session.speaker.speak(text, {stopOtherAudio: true, volume: 0.95})
-    } catch (err) {
-      console.error("session.speaker.speak failed, falling back to chime/play:", err)
-    } finally {
-      // 500ms acoustic dissipation cooldown to prevent glasses mic from hearing speaker tail
-      setTimeout(() => {
-        isSpeaking = false
-        ui.send("assistantState", {state: "idle"})
-      }, 500)
-    }
-  }
+  const device: Device = {
+    // The glasses take the photo and upload it. The answer is a download link
+    // that works for about 10 minutes.
+    async takePhoto({sound}) {
+      const photo = await session.camera.takePhoto({
+        size: PHOTO_SIZE,
+        compress: "medium", // JPEG quality. Smaller file, still clear enough for Claude.
+        sound, // the shutter sound tells the wearer a photo was taken; timed photos are silent
+        timeoutMs: PHOTO_TIMEOUT_MS,
+      })
+      return {url: photo.photoUrl, mediaType: photo.mimeType}
+    },
 
-  // Monitor speaker state changes
-  session.speaker.onStateChange((event) => {
-    if (event.state === "playing") {
-      isSpeaking = true
-      ui.send("assistantState", {state: "speaking"})
-    } else if (event.state === "stopped" || event.state === "idle") {
-      setTimeout(() => {
-        isSpeaking = false
-        ui.send("assistantState", {state: "idle"})
-      }, 300)
-    }
-  })
+    // Mentra's own text to speech. The sound goes to the phone's current audio
+    // output, which is the glasses when they are connected as Bluetooth audio.
+    // The promise resolves when the speech has finished playing.
+    async speak(text) {
+      await session.speaker.speak(text, {stopOtherAudio: true})
+    },
 
-  // =========================================================================
-  // HARDWARE EVENT: BUTTON PRESS (HANDS-FREE ADVANCE)
-  // =========================================================================
-  session.input.onButtonPress(() => {
-    // If learning session is active, physical button press advances to next step!
-    if (activeLearningTutorial && activeLearningTutorial.steps.length > 0) {
-      if (currentStepNumber < activeLearningTutorial.steps.length) {
-        currentStepNumber += 1
-        const nextStep = activeLearningTutorial.steps[currentStepNumber - 1]
+    // The light is a bonus. A failure here must never stop a lesson, so errors are swallowed.
+    light(color, times) {
+      void session.led.blink(color, 250, 150, times).catch(() => {})
+    },
 
-        ui.send("learningState", {
-          sessionId: currentSessionId,
-          tutorialId: activeLearningTutorial.id,
-          currentStep: currentStepNumber,
-          totalSteps: activeLearningTutorial.steps.length,
-          stepData: nextStep,
-          assistantState: "speaking"
-        })
-
-        ui.send("transcriptionUpdate", {
-          id: `step_${Date.now()}`,
-          speaker: "tinker",
-          text: nextStep.instruction_spoken,
-          isFinal: true,
-          timestamp: `Step ${currentStepNumber}`,
-          step: currentStepNumber
-        })
-
-        void speakInstruction(nextStep.instruction_spoken)
-      } else {
-        void speakInstruction("You have completed all steps of this tutorial. Well done!")
+    // `configure` returns a promise that rejects when the phone cannot apply it.
+    // A missing vocabulary boost is not worth stopping for.
+    setVocabulary(words) {
+      const seen = new Set<string>()
+      const list: string[] = []
+      for (const word of [...BASE_VOCABULARY, ...words]) {
+        const clean = word.trim()
+        const key = clean.toLowerCase()
+        if (!clean || seen.has(key)) continue
+        seen.add(key)
+        list.push(clean)
+        if (list.length >= MAX_VOCABULARY) break
       }
-    } else if (isRecording) {
-      // If recording, button press stops recording
-      stopTeachingSession()
-    }
-  })
+      void session.transcription.configure({vocabulary: list}).catch(() => {})
+    },
 
-  // =========================================================================
-  // HARDWARE EVENT: TRANSCRIPTION (LEARNER VOICE QUESTIONS)
-  // =========================================================================
-  session.transcription.on(async (data) => {
-    // Strict echo prevention: drop all transcription while speaker is vocalizing
-    if (isSpeaking || session.speaker.isPlaying) {
-      return
-    }
+    hardware(): Hardware {
+      // `session.capabilities` is null until the phone has described the glasses.
+      const capabilities = session.capabilities
+      const connected = glassesConnected ?? capabilities !== null
+      // The manifest marks camera and microphone as REQUIRED, so the Mentra App
+      // only runs Tinker on glasses that have both. They count as present
+      // unless the phone says otherwise.
+      return {
+        glassesConnected: connected,
+        hasCamera: connected && capabilities?.hasCamera !== false,
+        hasMic: connected && capabilities?.hasMicrophone !== false,
+      }
+    },
 
-    const text = data.text?.trim()
-    if (!text) return
+    // Used only when a photo's bytes are needed and the phone kept no copy.
+    async downloadPhoto(url) {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`Photo download failed with HTTP ${response.status}.`)
+      return bytesToBase64(await response.arrayBuffer())
+    },
 
-    // Stream interim to UI for instant visual feedback
-    ui.send("transcriptionUpdate", {
-      id: `usr_${Date.now()}`,
-      speaker: "user",
-      text,
-      isFinal: data.isFinal,
-      timestamp: "Spoken",
-      step: currentStepNumber
-    })
+    async savePhoto(key, url, mediaType) {
+      // The phone downloads the photo straight to its own storage.
+      // The bytes never pass through this JavaScript engine.
+      await session.blob.setFromUrl(key, url, {mimeType: mediaType})
+    },
 
-    // When utterance is final and we are in an active learning session, forward to Tinker AI
-    if (data.isFinal && text.length > 3 && activeLearningTutorial) {
-      ui.send("assistantState", {state: "thinking", message: "Tinker thinking..."})
+    async loadPhoto(key) {
+      const bytes = await session.blob.bytes(key)
+      return bytes ? bytesToBase64(bytes) : null
+    },
 
+    deletePhoto: (key) => session.blob.delete(key),
+    storageGet: (key) => session.storage.get(key),
+    storageSet: (key, value) => session.storage.set(key, value),
+    storageDelete: (key) => session.storage.delete(key),
+    now: () => Date.now(),
+
+    // Does nothing while the Tinker screen is closed. The screen asks for a snapshot when it opens.
+    emit(channel, payload) {
       try {
-        const response = await fetch(`${BACKEND_URL}/api/learning/sessions/${currentSessionId}/chat`, {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            query: text,
-            step: currentStepNumber,
-            tutorial_id: activeLearningTutorial.id
-          })
-        })
-
-        if (response.ok) {
-          const resData = await response.json()
-          const replyText = resData.reply_text || "Keep whisking in a rapid W motion from your wrist."
-
-          ui.send("transcriptionUpdate", {
-            id: `rep_${Date.now()}`,
-            speaker: "tinker",
-            text: replyText,
-            isFinal: true,
-            timestamp: "Tinker",
-            step: currentStepNumber
-          })
-
-          await speakInstruction(replyText)
-        } else {
-          throw new Error(`Chat API responded with ${response.status}`)
-        }
-      } catch (err) {
-        console.warn("Backend chat unavailable, using conversational fallback:", err)
-        const fallbackReply = `Regarding "${text}": Whisk firmly in a brisk W-pattern without pressing against the bottom. Aim for a thick, velvety micro-foam.`
-
-        ui.send("transcriptionUpdate", {
-          id: `rep_${Date.now()}`,
-          speaker: "tinker",
-          text: fallbackReply,
-          isFinal: true,
-          timestamp: "Tinker",
-          step: currentStepNumber
-        })
-
-        await speakInstruction(fallbackReply)
+        sendToScreen(channel, payload)
+      } catch {
+        // The screen went away between the check and the send. Nothing to do.
       }
-    }
-  })
-
-  // =========================================================================
-  // TEACHING WORKFLOW FUNCTIONS
-  // =========================================================================
-  const startTeachingSession = async () => {
-    isRecording = true
-    recordingStartTime = Date.now()
-    frameIndex = 0
-    currentSessionId = `teach_${Date.now()}`
-    recordedFrames = []
-
-    ui.send("teachingState", {
-      status: "recording",
-      elapsedSeconds: 0,
-      frameCount: 0,
-      sessionId: currentSessionId
-    })
-
-    // Warm up camera to ensure zero-latency initial photo capture
-    try {
-      await session.camera.warmUp({size: "medium", durationMs: 15000})
-    } catch (e) {
-      console.warn("Camera warmup skipped/failed:", e)
-    }
-
-    // Capture frame every 4 seconds
-    photoIntervalId = setInterval(async () => {
-      if (!isRecording) return
-
-      try {
-        const photo = await session.camera.takePhoto({
-          size: "medium",
-          compress: "medium",
-          sound: false
-        })
-
-        if (photo?.photoUrl) {
-          frameIndex += 1
-          const timestampSec = Math.floor((Date.now() - recordingStartTime) / 1000)
-
-          recordedFrames.push({
-            photoUrl: photo.photoUrl,
-            timestamp: timestampSec,
-            frameIndex
-          })
-
-          ui.send("photoCapture", {
-            photoUrl: photo.photoUrl,
-            frameIndex,
-            timestampSeconds: timestampSec
-          })
-
-          ui.send("teachingState", {
-            status: "recording",
-            elapsedSeconds: timestampSec,
-            frameCount: frameIndex,
-            sessionId: currentSessionId
-          })
-
-          // Post to backend asynchronously
-          fetch(`${BACKEND_URL}/api/teaching/sessions/${currentSessionId}/frames`, {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-              photo_url: photo.photoUrl,
-              timestamp: timestampSec,
-              frame_index: frameIndex
-            })
-          }).catch((err) => console.warn("Backend frame ingest not reachable:", err))
-        }
-      } catch (err) {
-        console.warn("takePhoto capture error:", err)
-      }
-    }, 4000)
-
-    // Elapsed timer loop
-    elapsedTimerId = setInterval(() => {
-      if (!isRecording) return
-      const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000)
-      ui.send("teachingState", {
-        status: "recording",
-        elapsedSeconds: elapsed,
-        frameCount: frameIndex,
-        sessionId: currentSessionId
-      })
-    }, 1000)
+    },
   }
 
-  const stopTeachingSession = async () => {
-    isRecording = false
-    if (photoIntervalId) clearInterval(photoIntervalId)
-    if (elapsedTimerId) clearInterval(elapsedTimerId)
+  const coach = new Coach(device, createBrain())
 
-    ui.send("teachingState", {
-      status: "processing",
-      elapsedSeconds: Math.floor((Date.now() - recordingStartTime) / 1000),
-      frameCount: frameIndex,
-      sessionId: currentSessionId
-    })
-
-    // Call backend to synthesize tutorial from collected frames
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/teaching/sessions/${currentSessionId}/synthesize`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          title_hint: "Matcha Demonstration",
-          frames: recordedFrames
-        })
-      })
-
-      if (response.ok) {
-        const result = await response.json()
-        if (result.tutorial) {
-          tutorialLibrary.set(result.tutorial.id, result.tutorial)
-          ui.send("tutorialGenerated", {tutorial: result.tutorial, status: "success"})
-          return
-        }
-      }
-    } catch (err) {
-      console.warn("Backend synthesis unavailable, synthesizing client-side tutorial:", err)
-    }
-
-    // Robust Fallback: Synthesize structured tutorial from frames if backend is processing or offline
-    const synthesizedTutorial: TutorialModel = {
-      id: `tut_recorded_${Date.now()}`,
-      title: "Demonstrated Matcha Technique",
-      description: `Synthesized tutorial from expert demonstration with ${frameIndex} POV keyframes.`,
-      category: "Culinary Skills",
-      total_steps: 5,
-      estimated_duration_minutes: 4,
-      created_at: new Date().toISOString(),
-      status: "published",
-      steps: [
-        {
-          id: "step_rec_1",
-          step_number: 1,
-          title: "Setup & Warm Utensils",
-          instruction_spoken: "Pre-warm your tea bowl with warm water and soften the bamboo chasen whisk tines.",
-          instruction_detailed: "Ceramic retains heat so the tea does not chill during whisking.",
-          source_timestamp_seconds: 5
-        },
-        {
-          id: "step_rec_2",
-          step_number: 2,
-          title: "Measure & Sift Powder",
-          instruction_spoken: "Sift two scoops of ceremonial matcha powder into the bottom of the warm, dry bowl.",
-          instruction_detailed: "Removes electrostatic clumps for an ultra-smooth drink.",
-          source_timestamp_seconds: 15
-        },
-        {
-          id: "step_rec_3",
-          step_number: 3,
-          title: "Add 80°C Hot Water",
-          instruction_spoken: "Pour approximately 70 milliliters of 80 degree Celsius water gently over the powder.",
-          instruction_detailed: "Never use boiling water to avoid scorching the tea.",
-          source_timestamp_seconds: 30
-        },
-        {
-          id: "step_rec_4",
-          step_number: 4,
-          title: "Brisk W-Whisking",
-          instruction_spoken: "Whisk briskly back and forth in a rapid W motion from your wrist until dense foam forms.",
-          instruction_detailed: "Keep the whisk off the bowl floor to aerate the suspension evenly.",
-          source_timestamp_seconds: 45
-        },
-        {
-          id: "step_rec_5",
-          step_number: 5,
-          title: "Finish & Serve",
-          instruction_spoken: "Slowly break any large surface bubbles with the whisk tip, then lift the chasen out and enjoy.",
-          instruction_detailed: "A delicate crema marks a properly aerated ceremonial bowl.",
-          source_timestamp_seconds: 60
-        }
-      ]
-    }
-
-    tutorialLibrary.set(synthesizedTutorial.id, synthesizedTutorial)
-    ui.send("tutorialGenerated", {tutorial: synthesizedTutorial, status: "success"})
+  // Phone screen. Everything here is registered BEFORE the first `await`, as
+  // Mentra's docs require. A request from the screen that arrives before its
+  // handler exists fails with "no handler registered".
+  session.ui.handle("getSnapshot", () => coach.snapshot())
+  session.ui.handle("setKey", ({key}) => coach.setKey(key))
+  for (const name of Object.keys(COMMANDS) as UiCommandChannel[]) {
+    // Not awaited: a command can take many seconds (photo, Claude, speech).
+    // The screen follows progress through the events the Coach emits.
+    onScreenMessage(name, (payload) => safely(name, () => coach.command(name, payload as never)))
   }
+  // The screen is thrown away when it closes. Every time it opens it gets the full picture.
+  session.ui.onOpen(() => safely("onOpen", () => device.emit("snapshot", coach.snapshot())))
 
-  // =========================================================================
-  // UI COMMAND LISTENERS
-  // =========================================================================
-  ui.onOpen(() => {
-    ui.send("connectionStatus", {
-      glassesConnected: true,
-      hasCamera: true,
-      hasMic: true,
-      backendConnected: false,
-      message: "Mentra Live connected and ready"
-    })
-    ui.send("tutorialList", {tutorials: Array.from(tutorialLibrary.values())})
+  // Glasses. `forLanguage` is used instead of automatic language detection,
+  // because detection can guess wrong on two-word commands.
+  session.transcription.forLanguage(LANGUAGE, (data) => safely("heard", () => coach.heard(data.text, data.isFinal)))
+  session.input.onButtonPress((press) => safely("button", () => coach.button(press.pressType)))
+  session.glasses.onConnection((data) => {
+    glassesConnected = data.connected
+    safely("hardwareChanged", () => coach.hardwareChanged())
   })
 
-  ui.on("ping", ({at}) => {
-    ui.send("pong", {at: Date.now(), roundtripMs: Date.now() - at, backgroundVersion: "tinker-v1"})
-  })
+  // The recording clock and the timed photos. The Coach decides what a tick does.
+  setInterval(() => safely("tick", () => coach.tick()), 1000)
 
-  ui.on("requestTutorials", async () => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/tutorials`)
-      if (res.ok) {
-        const data = await res.json()
-        if (data && data.length > 0) {
-          data.forEach((t: TutorialModel) => tutorialLibrary.set(t.id, t))
-        }
-      }
-    } catch {
-      // offline fallback
-    }
-    ui.send("tutorialList", {tutorials: Array.from(tutorialLibrary.values())})
-  })
+  // Read the saved Claude key and lessons from the phone. This is local storage, not the network.
+  await coach.load()
 
-  ui.on("startTeaching", () => {
-    void startTeachingSession()
-  })
-
-  ui.on("stopTeaching", () => {
-    void stopTeachingSession()
-  })
-
-  ui.on("publishTutorial", ({tutorial}) => {
-    tutorialLibrary.set(tutorial.id, tutorial)
-    ui.send("tutorialList", {tutorials: Array.from(tutorialLibrary.values())})
-
-    fetch(`${BACKEND_URL}/api/tutorials`, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(tutorial)
-    }).catch((err) => console.warn("Could not sync tutorial to backend:", err))
-  })
-
-  ui.on("startLearning", ({tutorialId}) => {
-    const tut = tutorialLibrary.get(tutorialId)
-    if (tut && tut.steps.length > 0) {
-      activeLearningTutorial = tut
-      currentStepNumber = 1
-      currentSessionId = `learn_${Date.now()}`
-
-      const step1 = tut.steps[0]
-      ui.send("learningState", {
-        sessionId: currentSessionId,
-        tutorialId: tut.id,
-        currentStep: 1,
-        totalSteps: tut.steps.length,
-        stepData: step1,
-        assistantState: "speaking"
-      })
-
-      void speakInstruction(step1.instruction_spoken)
-    }
-  })
-
-  ui.on("endLearning", () => {
-    activeLearningTutorial = null
-    void speakInstruction("Learning session concluded. Well done!")
-  })
-
-  ui.on("navigateStep", ({direction}) => {
-    if (!activeLearningTutorial) return
-
-    if (direction === "next" && currentStepNumber < activeLearningTutorial.steps.length) {
-      currentStepNumber += 1
-    } else if (direction === "previous" && currentStepNumber > 1) {
-      currentStepNumber -= 1
-    }
-
-    const step = activeLearningTutorial.steps[currentStepNumber - 1]
-    ui.send("learningState", {
-      sessionId: currentSessionId,
-      tutorialId: activeLearningTutorial.id,
-      currentStep: currentStepNumber,
-      totalSteps: activeLearningTutorial.steps.length,
-      stepData: step,
-      assistantState: "speaking"
-    })
-
-    void speakInstruction(step.instruction_spoken)
-  })
-
-  ui.on("askTinker", async ({text}) => {
-    ui.send("assistantState", {state: "thinking"})
-
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/learning/sessions/${currentSessionId}/chat`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          query: text,
-          step: currentStepNumber,
-          tutorial_id: activeLearningTutorial?.id
-        })
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        const reply = data.reply_text || "Keep whisking in a rapid W motion from your wrist."
-        ui.send("transcriptionUpdate", {
-          id: `rep_${Date.now()}`,
-          speaker: "tinker",
-          text: reply,
-          isFinal: true,
-          timestamp: "Tinker",
-          step: currentStepNumber
-        })
-        await speakInstruction(reply)
-        return
-      }
-    } catch {
-      // fallback
-    }
-
-    const fallback = `Regarding "${text}": Keep your whisk moving briskly in a W pattern without touching the base of the chawan. Aim for fine, dense froth!`
-    ui.send("transcriptionUpdate", {
-      id: `rep_${Date.now()}`,
-      speaker: "tinker",
-      text: fallback,
-      isFinal: true,
-      timestamp: "Tinker",
-      step: currentStepNumber
-    })
-    await speakInstruction(fallback)
-  })
-
-  // Start live stream request from UI
-  ui.on("startStream", async () => {
-    try {
-      const stream = await session.stream.startStream()
-      if (stream?.hlsUrl) {
-        ui.send("streamReady", {hlsUrl: stream.hlsUrl})
-      }
-    } catch (e) {
-      console.warn("startStream error:", e)
-    }
-  })
-
-  // Chime test request
-  ui.on("playChime", async () => {
-    try {
-      await session.speaker.play({
-        audioUrl: "https://raw.githubusercontent.com/rafaelreis-hotmart/Audio-Sample-files/master/sample.mp3",
-        volume: 0.8
-      })
-    } catch (e) {
-      console.warn("playChime error:", e)
-    }
-  })
+  // Fire and forget, after everything is registered.
+  device.setVocabulary([])
 })

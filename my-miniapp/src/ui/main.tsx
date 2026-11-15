@@ -1,13 +1,26 @@
 /**
- * WebView entry point. Imports the `mentra` global from the auto-injected
- * host shim and the typed `Channels` registry from src/shared/. The
- * WebView has zero direct native access — all hardware calls (glasses
- * display, sensors, BLE, etc.) go through `mentra.send(channel, payload)`
- * to background, which translates them into `session.*` SDK calls.
+ * main.tsx: the entry point of the phone screen.
+ *
+ * WHERE THIS RUNS
+ *   In a WebView inside the Mentra App, only while the Tinker screen is open.
+ *   It has no direct access to the glasses. Everything goes through the global
+ *   `mentra` object to the background (src/background), using the messages
+ *   declared in src/shared/channels.ts.
+ *
+ * WHAT THIS FILE DOES
+ *   It mounts <App /> inside <MentraProvider>. The provider does two jobs:
+ *     - it copies the Mentra App's light or dark theme onto <html class="dark">,
+ *       which styles.css uses to pick its colours
+ *     - once the app has mounted, it calls `mentra.ready()`. That hides the
+ *       Mentra App's loading screen and lets the background send its first
+ *       snapshot.
+ *   Do not call `mentra.ready()` by hand here. The provider calls it at the
+ *   right moment: after every `mentra.on` listener in the app is attached.
  */
 
 import {createRoot} from "react-dom/client"
 import {MentraProvider} from "@mentra/miniapp/ui"
+// Imported for its types only: it declares the typed global `mentra`.
 import "../shared/channels"
 import {App} from "./App"
 import "./styles.css"
@@ -17,14 +30,8 @@ if (!root) {
   throw new Error("Missing #root element in index.html")
 }
 
-// MentraProvider syncs <html class="dark"> with the host color scheme.
-// Purely a CSS theme bridge — does NOT construct a MiniappSession.
 createRoot(root).render(
   <MentraProvider>
     <App />
   </MentraProvider>,
 )
-
-// MUST call mentra.ready() on bootstrap so the host knows the WebView is
-// mounted and can flush any buffered `session.ui.send` calls.
-mentra.ready()

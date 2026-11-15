@@ -3,8 +3,8 @@
   "packageName": "com.mentra.tinker",
   "version": "1.0.0",
   "name": "Tinker",
-  "description": "An app that preserve the art, history, and culture of matcha tea.",
-  "icon": "IMBIcon.png",
+  "description": "Learn by doing. Teach by showing. An expert shows a hands-on skill once, and the glasses coach a beginner through it.",
+  "icon": "icon.png",
   "type": "standard",
   "sdkVersion": "0.3.0",
   "minHostVersion": "1.42.0",
@@ -13,21 +13,14 @@
     "ui": "ui/index.html"
   },
   "permissions": [
-    {
-      "type": "CAMERA"
-    },
-    {
-      "type": "MICROPHONE"
-    }
+    {"type": "CAMERA", "description": "Takes photos of each step to build a lesson and to check the learner's work."},
+    {"type": "MICROPHONE", "description": "Hears the expert's explanation, spoken commands and questions."}
   ],
   "hardwareRequirements": [
-    {
-      "type": "CAMERA",
-      "level": "REQUIRED"
-    },
-    {
-      "type": "MICROPHONE",
-      "level": "REQUIRED"
-    }
+    {"type": "CAMERA", "level": "REQUIRED", "description": "Photos of each step"},
+    {"type": "MICROPHONE", "level": "REQUIRED", "description": "Narration, spoken commands and questions"},
+    {"type": "SPEAKER", "level": "OPTIONAL", "description": "Reads each step aloud"},
+    {"type": "BUTTON", "level": "OPTIONAL", "description": "Press instead of speaking a command"},
+    {"type": "LIGHT", "level": "OPTIONAL", "description": "Green for a correct step, red for a fix"}
   ]
 }

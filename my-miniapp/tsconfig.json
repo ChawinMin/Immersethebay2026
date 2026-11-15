@@ -11,5 +11,5 @@
     "rootDir": ".",
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "build.ts", "bun.d.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
